@@ -170,8 +170,24 @@ and `target_field` methods for the outputs it should support.
   Float32 (`bench/gpu/metal_eval.jl`, 10⁵ sources at 200 per leaf): 10⁶ targets in
   0.074 s for Laplace and 0.20 s for Stokes against 0.38 s and 1.65 s on 12 CPU
   threads, the self evaluation at the sources in 6 and 14 ms, uploads of 4–11 ms
-  per evaluation. The upward pass, the dense M2L by symmetry classes and L2L are
-  the next stages (`docs/notes/gpu_plan.md`, `gpu_plan_delta.md`).
+  per evaluation. The expansion passes run on the device too
+  (`src/device_passes.jl`): `DevicePlan(fmm, to)` holds the folded M2M and L2L,
+  the pseudo-inverse factors, one dense translation operator per symmetry class
+  of the far offsets (`src/operators/symmetry.jl`: 16 classes in 3D, applied by
+  signed permutations of the expansion entries, verified against every offset at
+  build time of the tests), the pairs of each class grouped by target in
+  fixed-size chunks, and exact-size work buffers; `device_build_expansions!` runs
+  the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
+  gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
+  densities; `device_matvec!` adds the self evaluation. Real expansions only
+  (dual numbers take the CPU passes and the device evaluation). Measured on an
+  M3 Max in Float32 at 10⁵ points, p = 8, 200 per leaf (`bench/gpu/metal_matvec.jl`):
+  the matvec in 0.036 s for Laplace and 0.129 s for Stokes against 0.15 s and
+  0.90 s on 12 CPU threads in Float32, with the CPU's accuracy against direct
+  sums. The plan (`docs/notes/gpu_plan.md`, `gpu_plan_delta.md`) has the CUDA
+  side, which is untested here, and the remaining items: the downward
+  pseudo-inverse on real leaves only, dual numbers through the device passes, and
+  chunking the operators at 10⁶ points.
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
   is the FMM with sources and targets swapped and the kernel transposed; position
   pullbacks need the gradient kernel in `s2m!`/`l2t`/near field.

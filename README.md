@@ -59,12 +59,13 @@ root box.
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
 points gives a single-precision tree, operators, expansions and output.
 
-The evaluation (near field and local expansions) runs on GPUs through
-KernelAbstractions: `DeviceEvaluator(f, MtlArray)` (or `CuArray`) and
-`device_state(st, MtlArray)` move the data, and the device methods of `evaluate!`
-and `evaluate_at_sources!` take device arrays; backends are not dependencies.
-On an M3 Max in Float32, 10⁶ Stokes targets evaluate in 0.2 s (8× the 12-thread
-CPU time); see `docs/framework.md` and `bench/gpu/`.
+The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArray)`
+(or `CuArray`) moves the operators and lists once, `device_matvec!` runs the
+expansion passes (dense translations by the symmetry classes of the far offsets)
+and the self evaluation on the device, and the device methods of `evaluate!` and
+`evaluate_at_sources!` take device arrays; backends are not dependencies. On an
+M3 Max in Float32, 10⁵ Stokes points take 0.13 s per matvec (7× the 12-thread CPU
+time in the same precision); see `docs/framework.md` and `bench/gpu/`.
 
 Accuracy: the kernel-independent method with `nequiv` points per circle has a
 worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 48,
