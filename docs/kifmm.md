@@ -171,12 +171,19 @@ excluded, 0.01–0.15 s), theirs the one-shot call including their tree build.
 | 3D Laplace, 10⁵ | cube 8: 0.31 s, 3e-8 (0.45 s before the fold and the real transforms) | 0.10 s, 7e-5 (1e-3); 0.36 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
 | 3D Helmholtz k = 3, 10⁵ | cube 8: 0.80 s, 3e-8 | 0.77 s, 2e-7 (1e-6); 0.82 s, 2e-11 (1e-9) |
 | 3D stokeslets, 10⁵ | cube 8: 1.4 s, 4e-7 (2.6 s before) | 0.26 s, 5e-4 (1e-3); 1.15 s, 2e-6 (1e-6) |
-| 3D stresslets, 10⁵ | cube 8: 2.5 s, 1e-7 (before) | 1.3 s, 5e-7 (1e-6) |
+| 3D stresslets, 10⁵ | cube 8: 1.4 s, 1e-7 (2.5 s before) | 1.3 s, 5e-7 (1e-6) |
 
 In 2D the circle method is 1.5–2× faster than FMM2D at equal or better accuracy. In
 3D, after folding the pseudo-inverses and the real-input transforms, the cube
-method is level with FMM3D for Laplace and Helmholtz and about 25% slower for
+method is level with FMM3D for Laplace and Helmholtz and 10–25% slower for
 Stokes at comparable accuracy; the 3D rows above are at 200 points per leaf.
+
+Two measured non-gains, recorded so they are not retried blindly: reshaping the
+near field to run a chunk of targets in lanes against each source gains 1.3–1.4×
+in isolation (the loops are bound by the square root and division on 2-wide
+NEON), which is small against the invasiveness of the change; and the
+sibling-group pair walk of PVFMM is expected to gain little here because the
+tables of all 316 offsets already stay in L2 within a frequency block.
 
 Points per leaf matter more in 3D than in 2D, because every box carries
 `nlarge · nc` check values and its share of the translations while a surface
