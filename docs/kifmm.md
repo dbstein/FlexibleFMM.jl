@@ -137,6 +137,29 @@ per iteration. In 2D the spectral path does not pay: at 10⁶ uniform Laplace po
 the translations take about 4× longer than the dense circle operators (0.67 s
 against 0.17 s); the 2D implementation exists to be tested, not to be fast.
 
+## Against the Flatiron libraries
+
+`bench/compare/compare.jl` runs the same points through FMM2D.jl and FMM3D.jl
+(their own environment; the kernel normalisations are calibrated on a small
+problem and reported). Uniform points, 12 Apple cores, errors at 2000 targets
+against the direct sum; ours is the matvec with cached operators (tree build
+excluded, 0.01–0.15 s), theirs the one-shot call including their tree build.
+
+| case | ours | FMM2D / FMM3D |
+|---|---|---|
+| 2D Laplace, 10⁶ | circles 30: 0.25 s, 2e-8; circles 60: 0.40 s, 8e-14 | 0.66 s, 2e-9 (eps 1e-6); 0.66 s, 2e-13 (1e-9) |
+| 2D Helmholtz k = 10, 10⁶ | circles 60: 1.46 s, 1e-13 | 1.43 s, 5e-9 (1e-6); 1.69 s, 3e-12 (1e-9) |
+| 2D Stokes, 10⁶ | circles 60: 0.76 s, 1e-11 | 1.28 s, 2e-8 (1e-6); 1.34 s, 4e-12 (1e-9) |
+| 3D Laplace, 10⁵ | cube 6: 0.27 s, 2e-6; cube 8: 0.45 s, 3e-8; cube 10: 0.73 s, 6e-10 | 0.10 s, 7e-5 (1e-3); 0.36 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
+| 3D Helmholtz k = 3, 10⁵ | cube 8: 1.03 s, 3e-8 | 0.77 s, 2e-7 (1e-6); 0.82 s, 2e-11 (1e-9) |
+| 3D stokeslets, 10⁵ | cube 6: 1.2 s, 2e-5; cube 8: 2.6 s, 4e-7 | 0.26 s, 5e-4 (1e-3); 1.15 s, 2e-6 (1e-6) |
+| 3D stresslets, 10⁵ | cube 8: 2.5 s, 1e-7 | 1.3 s, 5e-7 (1e-6) |
+
+In 2D the circle method is 1.5–2× faster than FMM2D at equal or better accuracy. In
+3D FMM3D is 2–3× faster for Laplace and Stokes at comparable accuracy and about
+even for Helmholtz; the gap is the Stokes translation cost discussed above and the
+dense M2M/L2L of the finer large surface.
+
 Points per leaf matter more in 3D than in 2D, because every box carries
 `nlarge · nc` check values and its share of the translations while a surface
 distribution fragments the octree (100 000 points on a sphere give 87 000 nodes
