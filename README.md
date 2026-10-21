@@ -90,12 +90,16 @@ stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
   operator checks on all 40 far offsets, direct-sum and analytic (ring) comparisons,
   determinism, allocation and ForwardDiff tests
 - `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl N=1000000`
-  (kernel, method, distribution and `ppl` options in its header)
+  (kernel, method, distribution and `ppl` options in its header); with
+  `device=metal` from the `bench/gpu` environment (`julia --project=bench/gpu -t auto
+  bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
   FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies
-  (`julia --project=bench/compare -t auto bench/compare/compare.jl dim=3 N=100000`)
-- `bench/gpu/` — the device evaluation on Apple Silicon through Metal.jl, in its
-  own environment (`julia --project=bench/gpu -t auto bench/gpu/metal_eval.jl`)
+  (`julia --project=bench/compare -t auto bench/compare/compare.jl dim=3 N=100000`,
+  `device=metal` puts our rows on the GPU in Float32)
+- `bench/gpu/` — the device evaluation and matvec on Apple Silicon through
+  Metal.jl, in its own environment (`julia --project=bench/gpu -t auto
+  bench/gpu/metal_matvec.jl`)
 
 This is a port of the Python/numba `flexmm` package; the design decisions that
 differ from it are recorded in the docs.

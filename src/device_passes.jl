@@ -3,8 +3,9 @@
 # as GEMMs; the downward pass as L2L GEMMs, the dense translations by symmetry
 # class (one operator per class: a signed-permutation gather of the sources'
 # multipoles, one GEMM, a target-owned scatter), and the pseudo-inverse to the
-# densities the evaluation kernel reads. Real expansions only (dual numbers take
-# the CPU passes and the device evaluation). All buffers are exact-size device
+# densities the evaluation kernel reads. Real and complex expansions (complex
+# GEMMs need the device's BLAS to support them: CUDA yes, Metal no); dual numbers
+# take the CPU passes and the device evaluation. All buffers are exact-size device
 # arrays, because device GEMMs on views fall back to slow generic code.
 
 """
@@ -64,6 +65,7 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
     nc = 1 << D
     Nm, pml, pll, Nl = multipole_length(m), partial_multipole_length(m), partial_local_length(m), local_length(m)
     R = floattype(K)
+    TO = operator_eltype(m)              # the operators' eltype, complex for a complex kernel
     dev = DeviceEvaluator(f, to)
     lo = [first(tree.level_range[l]) for l in 1:L]
     nl = [length(tree.level_range[l]) for l in 1:L]
@@ -72,16 +74,16 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
     # level), one per far offset for circles, which have no cube lattice
     l3 = min(3, L)
     a = homogeneity(K)
-    M2Lc = Vector{Vector{typeof(to(zeros(R, 1, 1)))}}(undef, L)
+    M2Lc = Vector{Vector{typeof(to(zeros(TO, 1, 1)))}}(undef, L)
     m2l_scale = ones(L)
     if m isa CubeKernelIndependent
         e3 = f.ops[l3].extra
         sc, opsc = class_operators(K, e3.small, e3.embed, f.ops[l3].width, e3.p)
-        dc = [to(Matrix{R}(A)) for A in opsc]
+        dc = [to(Matrix{TO}(A)) for A in opsc]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
                 el = f.ops[l].extra
-                M2Lc[l] = [to(Matrix{R}(A)) for A in class_operators(K, el.small, el.embed, f.ops[l].width, el.p)[2]]
+                M2Lc[l] = [to(Matrix{TO}(A)) for A in class_operators(K, el.small, el.embed, f.ops[l].width, el.p)[2]]
             else
                 M2Lc[l] = dc
                 m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
@@ -91,10 +93,10 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
         offs = far_offsets(Val(D))
         nfo = length(offs)
         sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
-        dc = [to(Matrix{R}(f.ops[l3].M2L[fi].A)) for fi in 1:nfo]
+        dc = [to(Matrix{TO}(f.ops[l3].M2L[fi].A)) for fi in 1:nfo]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                M2Lc[l] = [to(Matrix{R}(f.ops[l].M2L[fi].A)) for fi in 1:nfo]
+                M2Lc[l] = [to(Matrix{TO}(f.ops[l].M2L[fi].A)) for fi in 1:nfo]
             else
                 M2Lc[l] = dc                                     # shared reference matrices
                 m2l_scale[l] = Float64(f.ops[l].m2l_scale)
@@ -133,17 +135,17 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
             end
         end
     end
-    mk(r, c) = to(zeros(R, r, c))
-    plan = DevicePlan{D,typeof(dev),typeof(to(zeros(R, 1, 1))),typeof(to(zeros(R, 1))),VI,typeof(to(idx)),typeof(to(sgn))}(
+    mk(r, c) = to(zeros(TO, r, c))
+    plan = DevicePlan{D,typeof(dev),typeof(to(zeros(TO, 1, 1))),typeof(to(zeros(R, 1))),VI,typeof(to(idx)),typeof(to(sgn))}(
         dev, L, lo, nl, Nm, pml, pll, Nl,
         [to(Int32.(f.s2m_nodes[l])) for l in 1:L],
         [to(Int32.(tree.group_parent[l])) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].M2M)) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].L2L)) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].extra.P_up.Uh)) for l in 1:L], [to(Vector{R}(f.ops[l].extra.P_up.invS)) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].extra.P_up.V)) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].extra.P_down.Uh)) for l in 1:L], [to(Vector{R}(f.ops[l].extra.P_down.invS)) for l in 1:L],
-        [to(Matrix{R}(f.ops[l].extra.P_down.V)) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].M2M)) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].L2L)) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].extra.P_up.Uh)) for l in 1:L], [to(Vector{R}(f.ops[l].extra.P_up.invS)) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].extra.P_up.V)) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].extra.P_down.Uh)) for l in 1:L], [to(Vector{R}(f.ops[l].extra.P_down.invS)) for l in 1:L],
+        [to(Matrix{TO}(f.ops[l].extra.P_down.V)) for l in 1:L],
         [Float64(f.ops[l].extra.pinv_scale) for l in 1:L],
         M2Lc, m2l_scale, to(idx), to(inv), to(sgn), chunks, chunk,
         mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),

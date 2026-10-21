@@ -4,13 +4,20 @@
 #     julia --project=. -t auto bench/bench.jl N=1000000 ppl=25,50,100 \
 #           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,square:12,bb:12
 #     julia --project=. -t auto bench/bench.jl dim=3 N=100000 kernel=laplace,stokes method=cube:8
+#     julia --project=bench/gpu -t auto bench/bench.jl dim=3 N=100000 ppl=200 \
+#           kernel=laplace,stokes method=cube:8 device=metal
 #
 # Defaults: dim=2, N=100000, ppl=50, dist=uniform,circle,clustered (sphere for the circle in
 # 3D), kernel=laplace,helmholtz:10, method=ki:60,bb:12 (cube:8 in 3D). Kernels: laplace,
 # helmholtz:k, yukawa:k, stokes (stokeslets with random vector densities), each in the
 # dimension given. Methods: ki:nequiv (kernel-independent on circles, 2D), square:p or
 # cube:p, optionally :d (kernel-independent on squares/cubes, p points per edge, margin d,
-# FFT translations, pc = 2p), bb:p (black-box, 2D).
+# FFT translations, pc = 2p), bb:p (black-box, 2D). device=metal or device=cuda adds a
+# row per case with the device matvec (DevicePlan + device_matvec!) and the device
+# evaluation at the targets (their location on the CPU excluded, as it is reusable),
+# in Float32 on Metal and Float64 on CUDA; the kernel-independent methods only. Needs
+# Metal.jl or CUDA.jl in the environment: bench/gpu has Metal, or add them to the
+# default environment, on which the package environment stacks.
 #
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
 # is split. It trades near-field work (∝ ppl per target) against the number of boxes
@@ -43,19 +50,19 @@ function clustered(rng, N, ::Val{D}) where {D}
 end
 const GENERATORS = Dict("uniform" => uniform, "circle" => circle, "sphere" => circle, "clustered" => clustered)
 
-function parse_kernel(s, ::Val{D}) where {D}
+function parse_kernel(s, ::Val{D}, ::Type{T}) where {D,T}
     name, rest = occursin(":", s) ? split(s, ":") : (s, "")
-    k = isempty(rest) ? 0.0 : parse(Float64, rest)
+    k = isempty(rest) ? zero(T) : T(parse(Float64, rest))
     if D == 2
-        name == "laplace" && return ("Laplace", Laplace2D())
+        name == "laplace" && return ("Laplace", Laplace2D(T))
         name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz2D(k))
         name == "yukawa" && return ("Yukawa k=$rest", Yukawa2D(k))
-        name == "stokes" && return ("Stokes", Stokeslet2D())
+        name == "stokes" && return ("Stokes", Stokeslet2D(T))
     else
-        name == "laplace" && return ("Laplace", Laplace3D())
+        name == "laplace" && return ("Laplace", Laplace3D(T))
         name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz3D(k))
         name == "yukawa" && return ("Yukawa k=$rest", Yukawa3D(k))
-        name == "stokes" && return ("Stokes", Stokeslet3D())
+        name == "stokes" && return ("Stokes", Stokeslet3D(T))
     end
     error("unknown kernel $s (laplace, helmholtz:k, yukawa:k, stokes)")
 end
@@ -71,44 +78,60 @@ function parse_method(s, K, ::Val{D}) where {D}
     name == "bb" && return ("BB$rest", BlackBox(K; p=parse(Int, rest)))
     error("unknown method $s (ki:nequiv, square:p[:d] / cube:p[:d], bb:p)")
 end
-density(rng, K, N) = randn(rng, N)
-density(rng, ::Stokeslet2D, N) = [randn(rng, SVector{2,Float64}) for _ in 1:N]
-density(rng, ::Stokeslet3D, N) = [randn(rng, SVector{3,Float64}) for _ in 1:N]
+density(rng, K, N) = randn(rng, FlexibleFMM.floattype(K), N)
+density(rng, K::Stokeslet2D, N) = [randn(rng, SVector{2,FlexibleFMM.floattype(K)}) for _ in 1:N]
+density(rng, K::Stokeslet3D, N) = [randn(rng, SVector{3,FlexibleFMM.floattype(K)}) for _ in 1:N]
 
 kpsc(n, t) = n / t / CORES / 1000
 
-function run_case(label, m, pts, τ, targets; ppl)
+function run_case(label, m, pts, τ, targets; ppl, to=nothing)
     N = length(pts); Nt = length(targets)
+    T = eltype(eltype(pts))
     nw = min(N, 4000)
-    box = (zero(eltype(pts)), 1.0)
+    box = (zero(eltype(pts)), one(T))
     fw = FMM(m, pts[1:nw]; ppl=ppl, bbox=box)                    # warm-up (compilation)
     sw = build_expansions(fw, pts[1:nw], τ[1:nw])
     evaluate_at_sources(fw, sw); evaluate(fw, sw, targets[1:1000])
     cache = fw.cache
     t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
-    st = FMMState(f, expansion_eltype(m, Float64, eltype(τ)), Float64, eltype(τ))
+    st = FMMState(f, expansion_eltype(m, T, eltype(τ)), T, eltype(τ))
     perm = f.tree.perm
     st.sources .= pts[perm]; st.τ .= τ[perm]
     t_up = @elapsed upward_pass!(st, f)
     t_down = @elapsed downward_pass!(st, f)
-    t_self = @elapsed evaluate_at_sources(f, st)
-    t_targ = @elapsed evaluate(f, st, targets)
+    local us, ut
+    t_self = @elapsed us = evaluate_at_sources(f, st)
+    t_targ = @elapsed ut = evaluate(f, st, targets)
     t_mv = t_up + t_down + t_self
     @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
+    if to !== nothing
+        plan = DevicePlan(f, to)
+        ds = (sources=to(st.sources), τ=to(st.τ))
+        outd = to(similar(us))
+        device_matvec!(outd, plan, ds)
+        t_dmv = minimum(@elapsed(device_matvec!(outd, plan, ds)) for _ in 1:3)
+        tgd = to(targets); nodes = to(Int32.(locate(f.tree, targets))); outt = to(similar(ut))
+        dsl = (locals=plan.locals, sources=ds.sources, τ=ds.τ)
+        evaluate!(outt, plan.dev, dsl, tgd, nodes)
+        t_dtg = minimum(@elapsed(evaluate!(outt, plan.dev, dsl, tgd, nodes)) for _ in 1:3)
+        err = maximum(norm.(Array(outd) .- us)) / maximum(norm.(us))
+        @printf "%-36s %s device: matvec %7.1f ms (%6.0f kpts/s) | targets %7.1f ms (%6.0f kpts/s) | vs CPU %.1e\n" label repeat(" ", 25) 1e3t_dmv N / t_dmv / 1000 1e3t_dtg Nt / t_dtg / 1000 err
+    end
     return nothing
 end
 
-function main(dim, N, ppls, dists, kernels, methods)
+function main(dim, N, ppls, dists, kernels, methods, device, to, T)
     rng = MersenneTwister(1)
-    println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES, ", dimension: ", dim)
-    targets = uniform(rng, 1_000_000, Val(dim))
+    println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES,
+            ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
+    targets = SVector{dim,T}.(uniform(rng, 1_000_000, Val(dim)))
     for dname in dists
-        pts = GENERATORS[dname](rng, N, Val(dim))
+        pts = SVector{dim,T}.(GENERATORS[dname](rng, N, Val(dim)))
         for ppl in ppls, kspec in kernels, mspec in methods
-            kname, K = parse_kernel(kspec, Val(dim))
+            kname, K = parse_kernel(kspec, Val(dim), T)
             mname, m = parse_method(mspec, K, Val(dim))
             τ = density(rng, K, N)
-            run_case("$kname $mname / $dname", m, pts, τ, targets; ppl=ppl)
+            run_case("$kname $mname / $dname", m, pts, τ, targets; ppl=ppl, to=to)
         end
     end
 end
@@ -125,4 +148,15 @@ ppls = parse.(Int, split(get(args, "ppl", "50"), ","))
 dists = String.(split(get(args, "dist", "uniform,circle,clustered"), ","))
 kernels = String.(split(get(args, "kernel", "laplace,helmholtz:10"), ","))
 methods = String.(split(get(args, "method", dim == 2 ? "ki:60,bb:12" : "cube:8"), ","))
-main(dim, N, ppls, dists, kernels, methods)
+device = get(args, "device", "cpu")
+device in ("cpu", "metal", "cuda") || error("device must be cpu, metal or cuda")
+# the device package is loaded at top level, in its own expression, so that the
+# bindings are visible to what follows
+if device == "metal"
+    using Metal
+elseif device == "cuda"
+    using CUDA
+end
+to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : nothing
+T = device == "metal" ? Float32 : Float64
+main(dim, N, ppls, dists, kernels, methods, device, to, T)

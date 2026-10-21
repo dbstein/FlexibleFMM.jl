@@ -9,6 +9,7 @@ rng = MersenneTwister(45)
          n -> [(randn(rng, P3), Stresslet(randn(rng, P3), normalize(randn(rng, P3))), Doublet(randn(rng, P3))) for _ in 1:n],
          CubeKernelIndependent{3}(Stokeslet3D(); p=5), 1e-10),
         ("Yukawa 3D", Yukawa3D(2.0), n -> randn(rng, n), CubeKernelIndependent{3}(Yukawa3D(2.0); p=5), 1e-11),
+        ("Helmholtz 3D (complex)", Helmholtz3D(2.0), n -> randn(rng, n), CubeKernelIndependent{3}(Helmholtz3D(2.0); p=5), 1e-10),
         ("Laplace 2D, circles", Laplace2D(), n -> randn(rng, n), KernelIndependent(Laplace2D(); nequiv=24), 1e-11))
     D = FlexibleFMM.dimension(m)
     N = 4000

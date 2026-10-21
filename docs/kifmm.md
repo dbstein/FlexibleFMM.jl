@@ -178,6 +178,13 @@ In 2D the circle method is 1.5–2× faster than FMM2D at equal or better accura
 method is level with FMM3D for Laplace and Helmholtz and 10–25% slower for
 Stokes at comparable accuracy; the 3D rows above are at 200 points per leaf.
 
+With `device=metal` our rows run on the GPU (`DevicePlan` + `device_matvec!`, the
+M3 Max in Float32, the libraries still on the CPU in Float64): Laplace cube 8 in
+0.035 s and Stokes cube 8 in 0.121 s per matvec, 10× and 9× the library's time at
+`eps = 1e-6`, with the errors against the direct sum at the Float32 floor
+(`2e-5`, the same at `p = 6, 8, 10`). Helmholtz stays on the CPU on Metal, which
+has no complex GEMM.
+
 Two measured non-gains, recorded so they are not retried blindly: reshaping the
 near field to run a chunk of targets in lanes against each source gains 1.3–1.4×
 in isolation (the loops are bound by the square root and division on 2-wide
