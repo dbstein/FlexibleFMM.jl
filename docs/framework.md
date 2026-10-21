@@ -147,12 +147,15 @@ and `target_field` methods for the outputs it should support.
 - **Another expansion scheme** (e.g. analytic Laplace/Helmholtz translations): a new
   `AbstractMethod` with the five operations and identity transforms; nothing in the
   driver changes (this is how `BlackBox` was added after `KernelIndependent`).
-- **Vector kernels** (Stokes, Brinkman): `SMatrix`-valued kernels with `SVector`
-  densities through the same `source_field`/`target_field` hooks; kernel matrices
-  need explicit block assembly, the method owns the expansion length, and pressure
-  becomes an output type evaluating the pressure kernel against the equivalent
-  density.
-- **3D**: the tree, lists and driver are generic in `D`; see `docs/tree.md`.
+- **Vector kernels** (Brinkman, say): as Stokes is done (`docs/stokes.md`), an
+  `SMatrix`-valued kernel with `SVector` densities goes through the same
+  `source_field`/`target_field` hooks; kernel matrices are assembled block-wise, the
+  method owns the expansion length (the Stokes augmentations), and `Pressure()` is an
+  output type evaluating the pressure kernel against the equivalent density.
+- **3D**: the tree, lists, driver, `GridKernelIndependent{3}` (cube surfaces) and the
+  spectral translations are generic in `D`; `KernelIndependent` (circles) and
+  `BlackBox` are 2D. What is missing is the 3D kernels and their tests; see
+  `docs/tree.md`.
 - **GPU** (KernelAbstractions): flat node arrays and CSR pair lists are already in
   place; `s2m!`, `l2t` and `evaluate_target` are allocation-free per-item bodies.
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`

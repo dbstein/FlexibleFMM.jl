@@ -86,7 +86,12 @@ of the density, embedded in the `p^D` lattice, with that table, which zero paddi
 forward transform per source box, one Hadamard product with the offset's table per
 interaction pair, and one inverse transform per target box, instead of a dense
 `N × N` product per pair: `(2p)^D` flops per pair instead of `N²`, which in 3D is 13×
-fewer at `p = 6` and 20× at `p = 8` and is the natural GPU formulation. The
+fewer at `p = 6` and 20× at `p = 8` and is the natural GPU formulation. In 2D it
+does not pay: `(2p)²` complex multiply-adds against `N²` real ones is a wash at
+`p = 12`, and the pair loop is memory bound (it streams `(2p)^D` complex numbers
+per pair from the transformed multipoles), so at 10⁶ uniform Laplace points the
+translations take about 6× longer than the dense circle operators (1.07 s against
+0.18 s, 12 threads); the 2D implementation exists to be tested, not to be fast. The
 driver's level-wise hook `m2l_level!` carries this; vector kernels use one table per
 component pair; the Stokes pressure row and point-source column are small dense
 corrections applied per pair. Dual-number and complex expansions are split into

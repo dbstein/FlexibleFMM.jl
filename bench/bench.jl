@@ -2,11 +2,13 @@
 # default one) with key=value arguments, all optional:
 #
 #     julia --project=. -t auto bench/bench.jl N=1000000 ppl=25,50,100 \
-#           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,bb:12
+#           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,grid:12,bb:12
 #
 # Defaults: N=100000, ppl=50, dist=uniform,circle,clustered, kernel=laplace,helmholtz:10,
-# method=ki:60,bb:12. Kernels: laplace, helmholtz:k, yukawa:k. Methods: ki:nequiv
-# (kernel-independent), bb:p (black-box).
+# method=ki:60,bb:12. Kernels: laplace, helmholtz:k, yukawa:k, stokes (stokeslets with
+# random vector densities). Methods: ki:nequiv (kernel-independent on circles), grid:p or
+# grid:p:d (kernel-independent on squares, p points per edge, margin d, FFT translations),
+# bb:p (black-box).
 #
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
 # is split. It trades near-field work (∝ ppl per target) against the number of boxes
@@ -43,14 +45,22 @@ function parse_kernel(s)
     name == "laplace" && return ("Laplace", Laplace2D())
     name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz2D(parse(Float64, rest)))
     name == "yukawa" && return ("Yukawa k=$rest", Yukawa2D(parse(Float64, rest)))
-    error("unknown kernel $s (laplace, helmholtz:k, yukawa:k)")
+    name == "stokes" && return ("Stokes", Stokeslet2D())
+    error("unknown kernel $s (laplace, helmholtz:k, yukawa:k, stokes)")
 end
 function parse_method(s, K)
-    name, rest = split(s, ":")
+    parts = split(s, ":")
+    name, rest = parts[1], parts[2]
     name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))
+    if name == "grid"
+        d = length(parts) > 2 ? parse(Float64, parts[3]) : 0.1
+        return ("Grid$rest d=$d", GridKernelIndependent{2}(K; p=parse(Int, rest), d=d))
+    end
     name == "bb" && return ("BB$rest", BlackBox(K; p=parse(Int, rest)))
-    error("unknown method $s (ki:nequiv, bb:p)")
+    error("unknown method $s (ki:nequiv, grid:p[:d], bb:p)")
 end
+density(rng, K, N) = randn(rng, N)
+density(rng, ::Stokeslet2D, N) = [P2(randn(rng), randn(rng)) for _ in 1:N]
 
 kpsc(n, t) = n / t / CORES / 1000
 
@@ -63,15 +73,14 @@ function run_case(label, m, pts, τ, targets; ppl)
     cache = fw.cache
     t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=(P2(0, 0), 1.0), cache=cache)
     st = FMMState(f, expansion_eltype(m, Float64, eltype(τ)), Float64, eltype(τ))
-    out = Vector{eltype(st.multipoles)}(undef, N)
     perm = f.tree.perm
     st.sources .= pts[perm]; st.τ .= τ[perm]
     t_up = @elapsed upward_pass!(st, f)
     t_down = @elapsed downward_pass!(st, f)
-    t_self = @elapsed evaluate_at_sources!(out, f, st)
+    t_self = @elapsed evaluate_at_sources(f, st)
     t_targ = @elapsed evaluate(f, st, targets)
     t_mv = t_up + t_down + t_self
-    @printf "%-30s ppl=%-4d N=%-8d %2d lev | tree %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
+    @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
     return nothing
 end
 
@@ -81,10 +90,10 @@ function main(N, ppls, dists, kernels, methods)
     targets = uniform(rng, 1_000_000)
     for dname in dists
         pts = GENERATORS[dname](rng, N)
-        τ = randn(rng, N)
         for ppl in ppls, kspec in kernels, mspec in methods
             kname, K = parse_kernel(kspec)
             mname, m = parse_method(mspec, K)
+            τ = density(rng, K, N)
             run_case("$kname $mname / $dname", m, pts, τ, targets; ppl=ppl)
         end
     end

@@ -21,7 +21,7 @@ prefactor, as in the 3D `(1/8π)[S + (ε²/2)D]`. Outputs: `Velocity()` (= `Pote
 `Gradient()` (the velocity gradient `∂u_a/∂t_j` as an `SMatrix`), `Pressure()`.
 
 ```julia
-plan = StokesFMMPlan(sources; targets=targets, method=:ki, nequiv=60)
+plan = StokesFMMPlan(sources; targets=targets, method=:ki, nequiv=60)   # or method=:grid, p=12
 stokes_fmm_eval!(u, plan; stokeslets=f, doublets=g, weights=w)        # at the targets
 stokes_fmm_eval_src_trg!(u_src, u_trg, plan; stokeslets=f)            # self and targets, one build
 u = StokesFMMKernel(sources; stokeslets=f, stresslets=q, stressvecs=ν) # one shot, self

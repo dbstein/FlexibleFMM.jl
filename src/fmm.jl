@@ -60,7 +60,10 @@ struct FMMState{S,P<:SVector,Tτ}
     locals::Matrix{S}
     sources::Vector{P}
     τ::Vector{Tτ}
-    partial::Matrix{S}     # partial expansions of the level being processed
+    partial::Matrix{S}     # partial expansions of the level being processed, addressed as
+                           # flat storage (reshape of a linear-range view): the sibling-group
+                           # reshape of a two-range view is not a StridedMatrix and would
+                           # send the M2M/L2L products to the generic matmul
     work1::Matrix{S}
     work2::Matrix{S}
     scratch::Dict{Any,Any} # method-specific workspaces (spectral translation)
@@ -142,7 +145,7 @@ function upward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         lr = tree.level_range[l]
         nl = length(lr)
         ops = f.ops[l]
-        pM = view(state.partial, 1:pml, 1:nl)
+        pM = reshape(view(state.partial, 1:pml*nl), pml, nl)
         fill!(pM, zero(S))
         _s2m_level!(pM, m, ops, f.s2m_nodes[l], first(lr), tree, state.sources, state.τ)
         if l < L
@@ -180,7 +183,7 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         lr = tree.level_range[l]
         nl = length(lr)
         ops = f.ops[l]
-        pL = view(state.partial, 1:pll, 1:nl)
+        pL = reshape(view(state.partial, 1:pll*nl), pll, nl)
         if l > 3
             # L2L: parents on level l-1 to the whole level block, in group order
             ng = nl ÷ nc

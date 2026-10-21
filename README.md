@@ -3,7 +3,7 @@
 A pure-Julia fast multipole method framework in two dimensions. One driver runs
 several expansion schemes on an adaptive quadtree whose ghost-cell construction makes
 every far-field interaction a same-width multipole-to-local translation and every
-near-field interaction a same-level colleague sum. Two schemes are provided:
+near-field interaction a same-level colleague sum. Three schemes are provided:
 
 - `KernelIndependent` — the kernel-independent FMM of Ying, Biros and Zorin
   (equivalent densities on circles); needs only kernel evaluations, for kernels that
@@ -26,7 +26,8 @@ sources = [SVector(rand(), rand()) for _ in 1:100_000]
 τ       = randn(100_000)
 targets = [SVector(rand(), rand()) for _ in 1:50_000]
 
-m  = KernelIndependent(Laplace2D(); nequiv=60)      # or BlackBox(Laplace2D(); p=12)
+K  = Laplace2D()
+m  = KernelIndependent(K; nequiv=60)   # or GridKernelIndependent{2}(K; p=12), BlackBox(K; p=12)
 f  = FMM(m, sources; ppl=50, bbox=(SVector(0.0, 0.0), 1.0))
 st = build_expansions(f, sources, τ)                # multipoles and locals
 u_sources = evaluate_at_sources(f, st)              # Σ_{j≠i} K(s_j, s_i) τ_j
@@ -64,14 +65,15 @@ at `k·w ≈ 3.40, 5.42, …`). The black-box method converges geometrically in 
 ## Layout
 
 - `src/tree/` — the ghost-cell quadtree (`docs/tree.md`)
-- `src/operators/` — the method interface, the operator cache, and the two methods
+- `src/operators/` — the method interface, the operator cache, and the methods
   (`docs/framework.md`, `docs/kifmm.md`, `docs/bbfmm.md`)
 - `src/fmm.jl`, `src/evaluate.jl` — the driver
 - `test/` — run with `julia --project=. -t auto test/runtests.jl` (or `Pkg.test()`);
   includes a kernel-free combinatorial check of the tree's interaction structure,
   operator checks on all 40 far offsets, direct-sum and analytic (ring) comparisons,
   determinism, allocation and ForwardDiff tests
-- `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl 1000000`
+- `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl N=1000000`
+  (kernel, method, distribution and `ppl` options in its header)
 
 This is a port of the Python/numba `flexmm` package; the design decisions that
 differ from it are recorded in the docs.
