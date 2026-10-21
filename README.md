@@ -59,6 +59,13 @@ root box.
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
 points gives a single-precision tree, operators, expansions and output.
 
+The evaluation (near field and local expansions) runs on GPUs through
+KernelAbstractions: `DeviceEvaluator(f, MtlArray)` (or `CuArray`) and
+`device_state(st, MtlArray)` move the data, and the device methods of `evaluate!`
+and `evaluate_at_sources!` take device arrays; backends are not dependencies.
+On an M3 Max in Float32, 10⁶ Stokes targets evaluate in 0.2 s (8× the 12-thread
+CPU time); see `docs/framework.md` and `bench/gpu/`.
+
 Accuracy: the kernel-independent method with `nequiv` points per circle has a
 worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 48,
 rounding floor `~1e-14` near 64) and global relative errors one to two orders
@@ -86,6 +93,8 @@ stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
   FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies
   (`julia --project=bench/compare -t auto bench/compare/compare.jl dim=3 N=100000`)
+- `bench/gpu/` — the device evaluation on Apple Silicon through Metal.jl, in its
+  own environment (`julia --project=bench/gpu -t auto bench/gpu/metal_eval.jl`)
 
 This is a port of the Python/numba `flexmm` package; the design decisions that
 differ from it are recorded in the docs.

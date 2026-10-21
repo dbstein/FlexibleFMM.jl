@@ -159,8 +159,19 @@ and `target_field` methods for the outputs it should support.
 - **3D**: done through `CubeKernelIndependent{3}` with `Laplace3D`, `Helmholtz3D`,
   `Yukawa3D` and `Stokeslet3D`; `KernelIndependent` (circles) and `BlackBox` are 2D.
   What 3D still needs is memory work on the spectral path (`docs/kifmm.md`).
-- **GPU** (KernelAbstractions): flat node arrays and CSR pair lists are already in
-  place; `s2m!`, `l2t` and `evaluate_target` are allocation-free per-item bodies.
+- **GPU** (KernelAbstractions): the evaluation runs on a device (`src/device.jl`):
+  `DeviceEvaluator(fmm, to)` moves the tree data once with a user-supplied array
+  mover (`identity`, `MtlArray`, `CuArray`), `device_state(state, to)` the locals,
+  sources and densities per evaluation, and the device methods of `evaluate!` and
+  `evaluate_at_sources!` run one work-item per target (its leaf's local expansion
+  plus the colleague sums, the arithmetic of `evaluate_target`); backends are not
+  dependencies, the backend is that of the output array, and the CPU backend
+  reproduces the threaded evaluation in the test suite. Measured on an M3 Max in
+  Float32 (`bench/gpu/metal_eval.jl`, 10⁵ sources at 200 per leaf): 10⁶ targets in
+  0.074 s for Laplace and 0.20 s for Stokes against 0.38 s and 1.65 s on 12 CPU
+  threads, the self evaluation at the sources in 6 and 14 ms, uploads of 4–11 ms
+  per evaluation. The upward pass, the dense M2L by symmetry classes and L2L are
+  the next stages (`docs/notes/gpu_plan.md`, `gpu_plan_delta.md`).
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
   is the FMM with sources and targets swapped and the kernel transposed; position
   pullbacks need the gradient kernel in `s2m!`/`l2t`/near field.
