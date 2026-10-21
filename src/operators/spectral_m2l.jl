@@ -200,8 +200,8 @@ function SpectralWorkspace(::Type{R}, ::Val{D}, p::Int, ncp::Int, nboxes::Int) w
     Sb = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Û)), bdims)
     Ub = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Σ̂)), bdims)
     dims = (ntuple(_ -> n, Val(D))..., ncp, nboxes)
-    fwd = plan_fft!(reshape(Σ̂, dims), 1:D)
-    bwd = plan_bfft!(reshape(Û, dims), 1:D)
+    fwd = plan_fft!(reshape(Σ̂, dims), 1:D; num_threads=Threads.nthreads())
+    bwd = plan_bfft!(reshape(Û, dims), 1:D; num_threads=Threads.nthreads())
     return SpectralWorkspace{R,D,typeof(fwd),typeof(bwd)}(Σ̂, Û, Sb, Ub, B, fwd, bwd)
 end
 

@@ -6,9 +6,9 @@ five operations per box width:
 | operation | signature | meaning |
 |---|---|---|
 | `s2m!` | `(col, m, ops, xs, τs, c)` | sources of a childless node → its *partial* multipole |
-| `M2M` | `Nexp × 4·Nexp` matrix | stacked children multipoles → parent partial multipole |
+| `M2M` | `Nm × 2^D·Nm` matrix | stacked children multipoles → parent multipole |
 | `M2L[f]` | `Nexp × Nexp` matrix per far offset | source multipole at offset `f` → target partial local |
-| `L2L` | `4·Nexp × Nexp` matrix | parent local → stacked children partial locals |
+| `L2L` | `2^D·pll × pll` matrix | parent partial local → stacked children partial locals |
 | `l2t` | `(m, ops, L, xrel)` | local column → potential at a point |
 
 plus two per-level transforms, `partial_to_multipole!` and `partial_to_local!`,
@@ -42,12 +42,15 @@ sibling-group reshape of a level block to `(4·Nexp, ngroups)` is free and BLAS
 applies `M2M`/`L2L` to a whole level in one GEMM.
 
 Upward, levels `L..3`: zero the partial block of the level; `s2m!` for every
-childless node with sources (threaded over contiguous chunks of those nodes); one
-GEMM `M2M · reshape(children block)` assigned to the group parents; then the
-method's transform. Downward, levels `3..L`: one GEMM `L2L · (parents gathered by
+childless node with sources (threaded over contiguous chunks of those nodes); the
+method's transform of that block into the childless nodes' multipoles; then one
+GEMM `M2M · reshape(children block)` assigned to the group parents' multipoles.
+Downward, levels `3..L`: one GEMM `L2L · (parents' partial locals gathered by
 group)` assigned to the level block; then, for each far offset with pairs, gather
 the source columns, one GEMM with `M2L[f]`, scatter-add into the targets (a target
-appears at most once per offset, so this is conflict-free); then the transform.
+appears at most once per offset, so this is conflict-free); the block is kept as
+the level's partial locals (what the next level's `L2L` consumes) and transformed
+into the densities the evaluation reads.
 Levels 1 and 2 carry nothing. The pair lists are stored in CSR form per level and
 offset (`InteractionList`), so each GEMM touches only the multipoles actually used
 (the Python applied each operator to every multipole of the level and gathered

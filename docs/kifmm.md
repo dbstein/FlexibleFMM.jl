@@ -41,18 +41,32 @@ worst interaction. This matches the ten digits at 32 points reported by Ying, Bi
 and Zorin. Beyond ~100 points the check matrices are singular to working precision
 and more points add nothing.
 
-## The check-to-equivalent solve must stay factored
+## The check-to-equivalent solve: factored, and folded in the safe order
 
 The pseudo-inverse of the check map has norm `1/σ_min ≈ 0.547^(−Nequiv/2)`, `1e13` at
-100 points. Forming it as one matrix, or folding it into `M2M`/`M2L`/`L2L`, means
-forming products whose terms are `1e13` and whose results are `O(1)`: the rounding
-error is `eps/σ_min` in *every* direction and the far field inherits it (`6e-4` at
-100 points, measured; the folded design was tried first). Applied in factored form,
-`V·(Σ⁻¹·(Uᴴ·c))`, the rounding amplified by `1/σ_j` stays in mode `j`, which the
-evaluation attenuates by `σ_j` again. The transforms are therefore applied per level
-on the whole block, in factored form (`FactoredPinv`), with the singular values
-below `pinv_rtol·σ₁` dropped. An LU solve would be equally stable but would not
-report or regularise the degeneracies below.
+100 points. Forming it as one matrix means forming products whose terms are `1e13`
+and whose results are `O(1)`: the rounding error is `eps/σ_min` in *every*
+direction and the far field inherits it (`6e-4` at 100 points, measured; the first
+design folded the dense pseudo-inverse into `M2M`/`M2L`/`L2L` this way). Applied in
+factored form, `V·(Σ⁻¹·(Uᴴ·c))`, the rounding amplified by `1/σ_j` stays in mode
+`j`, which the evaluation attenuates by `σ_j` again. The check data of the
+childless nodes (upward) and of every node (downward) are therefore transformed per
+level in factored form (`FactoredPinv`), with the singular values below
+`pinv_rtol·σ₁` dropped.
+
+The same order makes folding safe. `M2M` is stored as `V·(Σ⁻¹·(Uᴴ·M2Mᶜ))` and `L2L`
+as `((L2Lᶜ·V)·Σ⁻¹)·Uᴴ`, with `M2Mᶜ`, `L2Lᶜ` the check matrices: the check matrix is
+projected onto the singular vectors first, and since the columns of a physical check
+matrix (fields of nearby densities) have components of size `σ_k` along the `k`-th
+left vector, the scaled products stay `O(1)` and nothing cancels. `M2M` then maps
+the children's multipoles straight to the parent's and `L2L` the parent's check
+data to the children's, so the pseudo-inverses are applied only where the data
+enter (the childless nodes' check potentials) and leave (the densities the
+evaluation reads). For the cube method at `p = 8` this takes the Stokes `M2M` from
+`4056 × 7112` to `889 × 7112` (230 to 50 MB, 58 to 12.6 MFlop per sibling group),
+likewise `L2L`, and for a homogeneous kernel the folded operators are independent
+of the box width. PVFMM's `Precomp` folds in the same order. An LU solve would be
+equally stable but would not report or regularise the degeneracies below.
 
 ## Known degeneracies
 

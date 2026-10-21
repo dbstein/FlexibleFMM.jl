@@ -3,9 +3,9 @@
 #
 #   s2m!(col, m, ops, xs, τs, c)           sources of a childless node → its partial multipole
 #                                          (any density type with a `source_field`)
-#   ops.M2M   (Nexp × 2^D·Nexp)            stacked children multipoles → parent partial multipole
+#   ops.M2M   (Nm × 2^D·Nm)                stacked children multipoles → parent multipole
 #   ops.M2L[f] (Nexp × Nexp)               source multipole at far offset f → target partial local
-#   ops.L2L   (2^D·Nexp × Nexp)            parent local → stacked children partial locals
+#   ops.L2L   (2^D·pll × pll)              parent partial local → stacked children partial locals
 #   l2t(m, ops, L, xrel, out)              local column → output `out` at a point relative to the center
 #   partial_to_multipole!(M, m, ops, pM, work), partial_to_local!(L, m, ops, pL, work)
 #                                          partial → actual expansions of a whole level

@@ -166,8 +166,19 @@ function _ki_dense_operators(m::AbstractKernelIndependent, w::R, small, large, c
     centers = [(SVector{D,R}(δ) .- R(0.5)) * (w / 2) for δ in child_offsets(Val(D))]
     # one block per child, so that the stacked children multipoles (each component
     # major within its child) match the operator's columns
-    M2M = reduce(hcat, [_rep_velocity_matrix(K, child_small .+ Ref(c), c, w / 2, large) for c in centers])
-    L2L = reduce(vcat, [_local_to_check_matrix(K, large, child_small .+ Ref(c), c, w / 2) for c in centers])
+    M2Mc = reduce(hcat, [_rep_velocity_matrix(K, child_small .+ Ref(c), c, w / 2, large) for c in centers])
+    L2Lc = reduce(vcat, [_local_to_check_matrix(K, large, child_small .+ Ref(c), c, w / 2) for c in centers])
+    # The pseudo-inverses are folded in, in the order that keeps the 1/σ amplification
+    # inside its own mode: the check matrix is projected onto the singular vectors
+    # first. The columns of a physical check matrix (fields of nearby densities) have
+    # components of size ~σ_k along the k-th left singular vector, so the scaled
+    # products stay O(1). Forming V·S⁺·Uᴴ as a matrix first (entries 1/σ_min, which
+    # then cancel against the check matrix) loses eps/σ_min in every direction; that
+    # was the 6e-4 at nequiv = 100 of the first attempt. PVFMM's Precomp folds the
+    # same way. The folded operators are independent of the box width for a
+    # homogeneous kernel (the check matrix scales as λ^a, the pseudo-inverse as λ^-a).
+    M2M = P_up.V * (Diagonal(P_up.invS) * (P_up.Uh * M2Mc))           # children multipoles → multipole
+    L2L = ((L2Lc * P_down.V) * Diagonal(P_down.invS)) * P_down.Uh     # partial local → children partial locals
     return P_up, P_down, M2M, L2L
 end
 
@@ -190,7 +201,8 @@ function rescale(ref::LevelOperators{T,R,KIExtras{T,R,D}}, m::AbstractKernelInde
     f = λ^a
     e = ref.extra
     extra = KIExtras{T,R,D}(e.small .* λ, e.large .* λ, e.P_up, e.P_down, e.pinv_scale / f, e.p, e.h * λ, e.embed)
-    return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale * f, ref.l2l_scale * f, ref.m2l_scale * f, extra)
+    # M2M and L2L carry their pseudo-inverses and are width-invariant (see _ki_dense_operators)
+    return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale, ref.m2l_scale * f, extra)
 end
 
 # ---- component-major storage of a field with `nc` components at point `k` of `n` ----
@@ -232,7 +244,9 @@ end
     partial_to_multipole!(M, m, ops, pM, work)
     partial_to_local!(L, m, ops, pL, work)
 
-Check data of a whole level (one column per node) to equivalent densities.
+Check data of a whole level (one column per node) to equivalent densities: the
+childless nodes' multipoles on the way up (parents get theirs from `M2M`) and the
+densities the evaluation reads on the way down (`L2L` works on the check data).
 """
 partial_to_multipole!(M::AbstractVecOrMat, m::AbstractKernelIndependent, ops::LevelOperators, pM::AbstractVecOrMat, work) =
     apply!(M, ops.extra.P_up, pM, work, ops.extra.pinv_scale)

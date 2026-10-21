@@ -75,8 +75,7 @@ function check_m2m(rng, m, w, tol; density=random_density)
         stacked[(k-1)*Nm+1:k*Nm] = multipole_of(m, cops, xs, τ, centers[k])
         append!(allx, xs); append!(allτ, τ)
     end
-    pM = ops.M2M * stacked
-    Mp = partial_to_multipole!(zeros(S, Nm), m, ops, pM, zeros(S, max(length(pM), Nm)))
+    Mp = ops.M2M * stacked                                   # M2M yields the parent's multipole
     Md = multipole_of(m, ops, allx, allτ, zero(SVector{D,Float64}))
     ts = [2.5w * normalize(randn(rng, SVector{D,Float64})) for _ in 1:50]
     uex = direct(m.kernel, allx, allτ, ts)
@@ -100,7 +99,7 @@ function check_l2l(rng, m, w, tol; density=random_density)
     pLp = zeros(operator_eltype(m), pll)
     apply!(pLp, ops.M2L[f], multipole_of(m, ops, xs, τ, cs))
     Lp = local_of(m, ops, pLp)
-    pLc = ops.L2L * Lp
+    pLc = ops.L2L * pLp                                      # L2L works on the parent's partial local
     centers = [(SVector{D,Float64}(δ) .- 0.5) * (w / 2) for δ in child_offsets(Val(D))]
     for k in 1:nch
         ts = box_points(rng, centers[k], w / 2, 20)

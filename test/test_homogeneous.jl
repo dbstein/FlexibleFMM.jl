@@ -66,7 +66,8 @@ end
     end
     # a second box twice as large reuses the same matrices too
     g = FMM(m, 2 .* pts; ppl=30, bbox=(P2(0, 0), 2.0), cache=c)
-    @test g.ops[1].M2M === f.ops[1].M2M && g.ops[1].m2m_scale ≈ 2.0^-1
+    # the kernel-independent M2M carries its pseudo-inverse and is width-invariant
+    @test g.ops[1].M2M === f.ops[1].M2M && g.ops[1].m2m_scale ≈ (m isa KernelIndependent ? 1.0 : 2.0^-1)
 end
 
 @testset "end to end with shared operators: $(name)" for (name, m, tol) in (

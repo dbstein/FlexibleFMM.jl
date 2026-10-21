@@ -58,6 +58,7 @@ the sources and densities in tree order, and workspaces.
 struct FMMState{S,P<:SVector,Tτ}
     multipoles::Matrix{S}
     locals::Matrix{S}
+    plocals::Matrix{S}     # partial locals (check data) of every node: what L2L consumes
     sources::Vector{P}
     τ::Vector{Tτ}
     partial::Matrix{S}     # partial expansions of the level being processed, addressed as
@@ -77,6 +78,7 @@ function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,
     N = npoints(tree)
     nc = maximum(length, tree.level_range)
     return FMMState{S,SVector{D,Tp},Tτ}(zeros(S, multipole_length(m), n), zeros(S, local_length(m), n),
+                                       zeros(S, partial_local_length(m), n),
                                        Vector{SVector{D,Tp}}(undef, N), Vector{Tτ}(undef, N),
                                        Matrix{S}(undef, rows, nc), Matrix{S}(undef, rows, nc),
                                        Matrix{S}(undef, rows, nc), Dict{Any,Any}())
@@ -148,22 +150,23 @@ function upward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         pM = reshape(view(state.partial, 1:pml*nl), pml, nl)
         fill!(pM, zero(S))
         _s2m_level!(pM, m, ops, f.s2m_nodes[l], first(lr), tree, state.sources, state.τ)
+        # check data → multipoles of the childless nodes (the parents' columns are zero)
+        partial_to_multipole!(view(Mp, :, lr), m, ops, pM, state.work2)
         if l < L
+            # M2M: the children's multipoles to the parent's, in group order
             cr = tree.level_range[l+1]
             ng = length(cr) ÷ nc
             B = reshape(view(Mp, :, cr), nc * Nm, ng)
-            tmp = view(state.work1, 1:pml, 1:ng)
+            tmp = view(state.work1, 1:Nm, 1:ng)
             mul!(tmp, ops.M2M, B, eltype(ops.M2M)(ops.m2m_scale), false)
             gp = tree.group_parent[l+1]
-            off = first(lr) - 1
             @inbounds for g in 1:ng
-                p = gp[g] - off
-                for k in 1:pml
-                    pM[k, p] = tmp[k, g]
+                p = gp[g]
+                for k in 1:Nm
+                    Mp[k, p] = tmp[k, g]
                 end
             end
         end
-        partial_to_multipole!(view(Mp, :, lr), m, ops, pM, state.work2)
     end
     return state
 end
@@ -172,12 +175,12 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
     tree = f.tree
     m = f.method
     L = nlevels(tree)
-    Nm = multipole_length(m)
-    Nl = local_length(m)
     nc = 1 << D
     Mp = state.multipoles
     Lc = state.locals
+    Pl = state.plocals
     fill!(Lc, zero(S))
+    fill!(Pl, zero(S))
     pll = partial_local_length(m)
     for l in 3:L
         lr = tree.level_range[l]
@@ -185,14 +188,14 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         ops = f.ops[l]
         pL = reshape(view(state.partial, 1:pll*nl), pll, nl)
         if l > 3
-            # L2L: parents on level l-1 to the whole level block, in group order
+            # L2L: the parents' partial locals (level l-1) to the whole level block, in group order
             ng = nl ÷ nc
             gp = tree.group_parent[l]
-            G = view(state.work1, 1:Nl, 1:ng)
+            G = view(state.work1, 1:pll, 1:ng)
             @inbounds for g in 1:ng
                 p = gp[g]
-                for k in 1:Nl
-                    G[k, g] = Lc[k, p]
+                for k in 1:pll
+                    G[k, g] = Pl[k, p]
                 end
             end
             pops = f.ops[l-1]
@@ -202,6 +205,8 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         end
         # M2L for the whole level
         m2l_level!(pL, m, ops, Mp, tree.ilists[l], first(lr) - 1, state)
+        copyto!(view(Pl, :, lr), pL)
+        # the densities the evaluation reads
         partial_to_local!(view(Lc, :, lr), m, ops, pL, state.work2)
     end
     return state
