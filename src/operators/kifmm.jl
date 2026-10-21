@@ -153,7 +153,7 @@ function s2m!(col::AbstractVector, m::KernelIndependent, ops::LevelOperators, xs
     @inbounds for k in eachindex(large)
         acc = zero(eltype(col))
         for j in eachindex(xs)
-            acc += K(xs[j] - c, large[k]) * τs[j]
+            acc += source_field(K, xs[j] - c, large[k], τs[j])
         end
         col[k] = acc
     end
@@ -172,17 +172,27 @@ partial_to_local!(L::AbstractVecOrMat, m::KernelIndependent, ops::LevelOperators
     apply!(L, ops.extra.P_down, pL, work)
 
 """
-    l2t(m, ops, L, xrel)
+    l2t(m, ops, L, xrel, out=Potential())
 
-Potential of the local expansion `L` (density on the large circle) at `xrel`
+Output `out` of the local expansion `L` (density on the large circle) at `xrel`
 relative to the box center.
 """
-@inline function l2t(m::KernelIndependent, ops::LevelOperators, L::AbstractVector, xrel::SVector{2})
+@inline function l2t(m::KernelIndependent, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Potential=Potential())
     K = m.kernel
     large = ops.extra.large
     acc = zero(promote_type(eltype(L), kernel_eltype(K, eltype(large), typeof(xrel))))
     @inbounds for k in eachindex(large)
         acc += K(large[k], xrel) * L[k]
+    end
+    return acc
+end
+@inline function l2t(m::KernelIndependent, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Gradient)
+    K = m.kernel
+    large = ops.extra.large
+    S = promote_type(eltype(L), kernel_eltype(K, eltype(large), typeof(xrel)))
+    acc = zero(SVector{2,S})
+    @inbounds for k in eachindex(large)
+        acc += gradient_t(K, large[k], xrel) * L[k]
     end
     return acc
 end

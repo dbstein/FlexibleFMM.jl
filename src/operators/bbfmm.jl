@@ -82,7 +82,8 @@ end
 """
     s2m!(col, m, ops, xs, τs, c)
 
-Chebyshev moments of the sources of a childless node.
+Chebyshev moments of the sources of a childless node: each density type adds its
+action on the basis through `accumulate_moments!`.
 """
 function s2m!(col::AbstractVector, m::BlackBox{K,P}, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{2}) where {K,P}
@@ -91,16 +92,46 @@ function s2m!(col::AbstractVector, m::BlackBox{K,P}, ops::LevelOperators, xs::Ab
         col[n] = zero(eltype(col))
     end
     @inbounds for i in eachindex(xs)
-        x̂ = (xs[i] - c) * s
-        tx = chebyshev_values(Val(P), x̂[1])
-        ty = chebyshev_values(Val(P), x̂[2])
-        τ = τs[i]
-        for k in 1:P
-            tyk = ty[k] * τ
-            for j in 1:P
-                col[j + (k - 1) * P] += tx[j] * tyk
-            end
+        accumulate_moments!(col, Val(P), (xs[i] - c) * s, s, τs[i])
+    end
+    return col
+end
+
+"""
+    accumulate_moments!(col, ::Val{P}, x̂, scale, τ)
+
+Add the moments of one source at `x̂ ∈ [-1,1]²` with density `τ`: `τ·T_n(x̂)` for a
+charge, `d·∇ₛT_n` (with `scale = 2/w` for the chain rule) for a dipole, the sum for
+a tuple. A new singularity type adds a method here.
+"""
+@inline function accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, τ::Number) where {P}
+    tx = chebyshev_values(Val(P), x̂[1])
+    ty = chebyshev_values(Val(P), x̂[2])
+    @inbounds for k in 1:P
+        tyk = ty[k] * τ
+        for j in 1:P
+            col[j + (k - 1) * P] += tx[j] * tyk
         end
+    end
+    return col
+end
+@inline function accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, d::Dipole) where {P}
+    tx, dx = chebyshev_values_derivatives(Val(P), x̂[1])
+    ty, dy = chebyshev_values_derivatives(Val(P), x̂[2])
+    d1 = d.d[1] * scale
+    d2 = d.d[2] * scale
+    @inbounds for k in 1:P
+        a = ty[k] * d1
+        b = dy[k] * d2
+        for j in 1:P
+            col[j + (k - 1) * P] += dx[j] * a + tx[j] * b
+        end
+    end
+    return col
+end
+@inline function accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, τ::Tuple) where {P}
+    for τi in τ
+        accumulate_moments!(col, Val(P), x̂, scale, τi)
     end
     return col
 end
@@ -109,13 +140,19 @@ partial_to_multipole!(M::AbstractVecOrMat, ::BlackBox, ::LevelOperators, pM::Abs
 partial_to_local!(L::AbstractVecOrMat, ::BlackBox, ::LevelOperators, pL::AbstractVecOrMat, work) = copyto!(L, pL)
 
 """
-    l2t(m, ops, L, xrel)
+    l2t(m, ops, L, xrel, out=Potential())
 
-The local Chebyshev series evaluated at `xrel` relative to the box center.
+The local Chebyshev series (or its gradient) at `xrel` relative to the box center.
 """
-@inline function l2t(m::BlackBox{K,P}, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}) where {K,P}
+@inline function l2t(m::BlackBox{K,P}, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Potential=Potential()) where {K,P}
     x̂ = xrel * ops.extra.scale
     return clenshaw2d(L, P, x̂[1], x̂[2])
+end
+@inline function l2t(m::BlackBox{K,P}, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Gradient) where {K,P}
+    s = ops.extra.scale
+    x̂ = xrel * s
+    gx, gy = clenshaw2d_gradient(L, P, x̂[1], x̂[2])
+    return SVector(gx, gy) * s
 end
 
 """

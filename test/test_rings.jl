@@ -41,6 +41,12 @@ box = (P2(-2.5, -2.5), 5.0)
     ui = evaluate(f, st, int)
     exact_i = fill(-sum(Qk * log(R) for (Qk, R) in zip(Q, radii)) / (2π), length(int))
     @test max_relative_diff(ui, exact_i) < 1e-9
+    # the exterior gradient is that of the point charge, and the interior one vanishes
+    ge = evaluate(f, st, ext; output=Gradient())
+    exact_ge = [-sum(Q) * x / (2π * norm(x)^2) for x in ext]
+    @test maximum(norm.(ge .- exact_ge)) / maximum(norm.(exact_ge)) < 1e-8
+    gi = evaluate(f, st, int; output=Gradient())
+    @test maximum(norm.(gi)) < 1e-8 * maximum(norm.(exact_ge))
 end
 
 @testset "Yukawa rings" begin

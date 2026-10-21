@@ -30,6 +30,12 @@ u_sources = evaluate_at_sources(f, st)              # Σ_{j≠i} K(s_j, s_i) τ_
 u_targets = evaluate(f, st, targets)                # Σ_j K(s_j, t) τ_j
 ```
 
+Densities say what a source is: a number is a charge, `Dipole(d)` a double-layer
+source with moment `d` (`Dipole(μ, n)` for strength and normal), and a tuple of
+densities sums its parts. `evaluate(f, st, targets; output=Gradient())` returns
+`∇u` as `SVector`s. Dual-number positions, densities and targets go through
+unchanged (directional and shape derivatives).
+
 Kernels are callables `K(source, target)` on `SVector{2}`s; `Laplace2D()`,
 `Helmholtz2D(k)` and `Yukawa2D(k)` are provided and any translation-invariant
 function of the same shape works. `build_expansions!` reuses a state for new

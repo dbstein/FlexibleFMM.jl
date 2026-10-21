@@ -51,4 +51,7 @@ include("operator_checks.jl")
     @testset "Float32" begin
         include("test_float32.jl")
     end
+    @testset "sources and targets" begin
+        include("test_sources.jl")
+    end
 end

@@ -2,10 +2,11 @@
 # into the five operators the driver needs, per box width:
 #
 #   s2m!(col, m, ops, xs, τs, c)           sources of a childless node → its partial multipole
+#                                          (any density type with a `source_field`)
 #   ops.M2M   (Nexp × 2^D·Nexp)            stacked children multipoles → parent partial multipole
 #   ops.M2L[f] (Nexp × Nexp)               source multipole at far offset f → target partial local
 #   ops.L2L   (2^D·Nexp × Nexp)            parent local → stacked children partial locals
-#   l2t(m, ops, L, xrel)                   local column → potential at a point relative to the center
+#   l2t(m, ops, L, xrel, out)              local column → output `out` at a point relative to the center
 #   partial_to_multipole!(M, m, ops, pM, work), partial_to_local!(L, m, ops, pL, work)
 #                                          partial → actual expansions of a whole level
 #
@@ -61,5 +62,6 @@ eltype `Tτ`: the operator eltype promoted with the kernel's output on such posi
 function expansion_eltype(m::AbstractMethod, ::Type{Tpos}, ::Type{Tτ}) where {Tpos,Tτ}
     K = near_kernel(m)
     return promote_type(operator_eltype(m),
-                        kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)}), Tτ)
+                        kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)}),
+                        density_scalar(Tτ))
 end

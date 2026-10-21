@@ -16,6 +16,33 @@ floattype(::AbstractKernel) = Float64
 @inline _sqnorm(d::SVector) = sum(abs2, d)
 
 """
+    AbstractRadialKernel
+
+A kernel `K(s, t) = scale(K)·f(|t - s|)`. Subtypes define `scale(K)`, `radial_value(K, r)`
+and `radial_derivatives(K, r) -> (f, f′, f″)`; evaluation, gradient and Hessian follow.
+"""
+abstract type AbstractRadialKernel <: AbstractKernel end
+@inline function (K::AbstractRadialKernel)(s::SVector{2}, t::SVector{2})
+    return scale(K) * radial_value(K, sqrt(_sqnorm(t - s)))
+end
+@inline function gradient_t(K::AbstractRadialKernel, s::SVector{2}, t::SVector{2})
+    d = t - s
+    r = sqrt(_sqnorm(d))
+    _, f′, _ = radial_derivatives(K, r)
+    return (scale(K) * f′ / r) * d
+end
+@inline function hessian_t(K::AbstractRadialKernel, s::SVector{2}, t::SVector{2})
+    d = t - s
+    r2 = _sqnorm(d)
+    r = sqrt(r2)
+    _, f′, f″ = radial_derivatives(K, r)
+    c = scale(K)
+    a = c * (f″ / r2 - f′ / (r2 * r))
+    b = c * f′ / r
+    return a * (d * transpose(d)) + b * one(SMatrix{2,2,typeof(b)})
+end
+
+"""
     Laplace2D(T=Float64)
 
 Free-space Laplace Green's function `-log|t - s| / 2π`, with constants in precision `T`.
@@ -26,39 +53,63 @@ end
 Laplace2D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace2D{T}(-1 / (4 * T(π)))
 floattype(::Laplace2D{T}) where {T} = T
 @inline (K::Laplace2D)(s::SVector{2}, t::SVector{2}) = K.c * log(_sqnorm(t - s))
+@inline function gradient_t(K::Laplace2D, s::SVector{2}, t::SVector{2})
+    d = t - s
+    return (2 * K.c / _sqnorm(d)) * d
+end
+@inline function hessian_t(K::Laplace2D, s::SVector{2}, t::SVector{2})
+    d = t - s
+    r2 = _sqnorm(d)
+    a = 2 * K.c / r2
+    return a * one(SMatrix{2,2,typeof(a)}) - (2a / r2) * (d * transpose(d))
+end
 
 """
     Helmholtz2D(k)
 
-Helmholtz Green's function `(i/4) H₀⁽¹⁾(k |t - s|)` (complex valued), written as
-`(i/4)(J₀ + i·Y₀)` so that it keeps the precision of `k` (`Float32` included).
+Helmholtz Green's function `(i/4) H₀⁽¹⁾(k |t - s|)` (complex valued), written through
+`J₀, Y₀` (and `J₁, Y₁` for derivatives) so that it keeps the precision of `k`.
 """
-struct Helmholtz2D{T<:AbstractFloat} <: AbstractKernel
+struct Helmholtz2D{T<:AbstractFloat} <: AbstractRadialKernel
     k::T
     c::Complex{T}
 end
 Helmholtz2D(k::Real) = (T = typeof(float(k)); Helmholtz2D{T}(T(k), Complex{T}(0, 1 // 4)))
 floattype(::Helmholtz2D{T}) where {T} = T
-@inline function (K::Helmholtz2D)(s::SVector{2}, t::SVector{2})
-    kr = K.k * sqrt(_sqnorm(t - s))
-    return K.c * (besselj0(kr) + im * bessely0(kr))
+@inline scale(K::Helmholtz2D) = K.c
+@inline function radial_value(K::Helmholtz2D, r)
+    kr = K.k * r
+    return besselj0(kr) + im * bessely0(kr)
+end
+@inline function radial_derivatives(K::Helmholtz2D, r)
+    kr = K.k * r
+    h0 = besselj0(kr) + im * bessely0(kr)
+    h1 = besselj1(kr) + im * bessely1(kr)
+    return h0, -K.k * h1, -K.k^2 * (h0 - h1 / kr)
 end
 
 """
     Yukawa2D(k)
 
 Modified Helmholtz Green's function `K₀(k |t - s|) / 2π` in the precision of `k`
-(`besselk` computes in Float64; the result is converted back).
+(`besselk` computes in Float64; results are converted back).
 """
-struct Yukawa2D{T<:AbstractFloat} <: AbstractKernel
+struct Yukawa2D{T<:AbstractFloat} <: AbstractRadialKernel
     k::T
     c::T       # 1/(2π)
 end
 Yukawa2D(k::Real) = (T = typeof(float(k)); Yukawa2D{T}(T(k), 1 / (2 * T(π))))
 floattype(::Yukawa2D{T}) where {T} = T
-@inline function (K::Yukawa2D)(s::SVector{2}, t::SVector{2})
-    kr = K.k * sqrt(_sqnorm(t - s))
-    return K.c * oftype(kr, besselk(0, kr))
+@inline scale(K::Yukawa2D) = K.c
+@inline function radial_value(K::Yukawa2D, r)
+    kr = K.k * r
+    return oftype(kr, besselk(0, kr))
+end
+@inline function radial_derivatives(K::Yukawa2D, r)
+    kr = K.k * r
+    k0 = oftype(kr, besselk(0, kr))
+    k1 = oftype(kr, besselk(1, kr))
+    return k0, -K.k * k1, K.k^2 * (k0 + k1 / kr)
 end
 
 """
@@ -68,7 +119,7 @@ end
 `x₁`-dipole of strength `c` placed at the source. It is harmonic in both arguments and
 translation invariant, so every expansion scheme here is exact for it, but it is not
 symmetric under `s ↔ t`. Radial kernels hide any transposed operator; this one does
-not, which is its only purpose.
+not, which is its only purpose. Its derivatives use the generic fallback.
 """
 struct LaplaceDipoleTest{T<:AbstractFloat} <: AbstractKernel
     c::T
@@ -107,62 +158,62 @@ function kernel_matrix(K, sources::AbstractVector, targets::AbstractVector)
     return A
 end
 
-# Accumulates Σ_{i ≠ skip} K(sources[i], t) τ[i] onto `acc`.
-@inline function _direct_target(K, sources, τ, t, skip::Int, acc)
+# Accumulates Σ_{i ≠ skip} target_field(K, sources[i], t, τ[i], out) onto `acc`.
+@inline function _direct_target(K, sources, τ, t, skip::Int, acc, out)
     @inbounds for i in eachindex(sources)
         i == skip && continue
-        acc += K(sources[i], t) * τ[i]
+        acc += target_field(K, sources[i], t, τ[i], out)
     end
     return acc
 end
 
 """
-    direct!(out, K, sources, τ, targets)
+    direct!(out, K, sources, τ, targets; output=Potential())
 
-`out[j] = Σ_i K(sources[i], targets[j]) τ[i]`: the O(N²) reference sum, threaded over
-targets.
+`out[j] = Σ_i target_field(K, sources[i], targets[j], τ[i], output)`: the O(N²)
+reference sum, threaded over targets.
 """
 function direct!(out::AbstractVector, K, sources::AbstractVector, τ::AbstractVector,
-                 targets::AbstractVector)
+                 targets::AbstractVector; output=Potential())
     length(sources) == length(τ) || throw(DimensionMismatch("sources and τ differ in length"))
     length(out) == length(targets) || throw(DimensionMismatch("out and targets differ in length"))
     z = zero(eltype(out))
     Threads.@threads :dynamic for j in eachindex(targets)
-        @inbounds out[j] = _direct_target(K, sources, τ, targets[j], 0, z)
+        @inbounds out[j] = _direct_target(K, sources, τ, targets[j], 0, z, output)
     end
     return out
 end
 
 """
-    direct_self!(out, K, sources, τ)
+    direct_self!(out, K, sources, τ; output=Potential())
 
-`out[j] = Σ_{i ≠ j} K(sources[i], sources[j]) τ[i]`.
+`out[j] = Σ_{i ≠ j} target_field(K, sources[i], sources[j], τ[i], output)`.
 """
-function direct_self!(out::AbstractVector, K, sources::AbstractVector, τ::AbstractVector)
+function direct_self!(out::AbstractVector, K, sources::AbstractVector, τ::AbstractVector; output=Potential())
     length(sources) == length(τ) || throw(DimensionMismatch("sources and τ differ in length"))
     length(out) == length(sources) || throw(DimensionMismatch("out and sources differ in length"))
     z = zero(eltype(out))
     Threads.@threads :dynamic for j in eachindex(sources)
-        @inbounds out[j] = _direct_target(K, sources, τ, sources[j], j, z)
+        @inbounds out[j] = _direct_target(K, sources, τ, sources[j], j, z, output)
     end
     return out
 end
 
-function _potential_eltype(K, sources, τ, targets)
-    return promote_type(kernel_eltype(K, eltype(sources), eltype(targets)), eltype(τ))
+function _potential_eltype(K, sources, τ, targets, output)
+    return Base.promote_op(target_field, typeof(K), eltype(sources), eltype(targets), eltype(τ), typeof(output))
 end
 
 """
-    direct(K, sources, τ, targets)
-    direct_self(K, sources, τ)
+    direct(K, sources, τ, targets; output=Potential())
+    direct_self(K, sources, τ; output=Potential())
 
 Allocating versions of `direct!` and `direct_self!`.
 """
-function direct(K, sources::AbstractVector, τ::AbstractVector, targets::AbstractVector)
-    out = Vector{_potential_eltype(K, sources, τ, targets)}(undef, length(targets))
-    return direct!(out, K, sources, τ, targets)
+function direct(K, sources::AbstractVector, τ::AbstractVector, targets::AbstractVector; output=Potential())
+    out = Vector{_potential_eltype(K, sources, τ, targets, output)}(undef, length(targets))
+    return direct!(out, K, sources, τ, targets; output=output)
 end
-function direct_self(K, sources::AbstractVector, τ::AbstractVector)
-    out = Vector{_potential_eltype(K, sources, τ, sources)}(undef, length(sources))
-    return direct_self!(out, K, sources, τ)
+function direct_self(K, sources::AbstractVector, τ::AbstractVector; output=Potential())
+    out = Vector{_potential_eltype(K, sources, τ, sources, output)}(undef, length(sources))
+    return direct_self!(out, K, sources, τ; output=output)
 end

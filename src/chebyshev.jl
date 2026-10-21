@@ -30,6 +30,29 @@ end
 end
 
 """
+    chebyshev_values_derivatives(::Val{P}, x) -> (SVector{P}, SVector{P})
+
+`T_0(x), …, T_{P-1}(x)` and their derivatives, from `T_n' = 2T_{n-1} + 2x T_{n-1}' - T_{n-2}'`.
+"""
+@inline function chebyshev_values_derivatives(::Val{P}, x) where {P}
+    t = MVector{P,typeof(x)}(undef)
+    d = MVector{P,typeof(x)}(undef)
+    @inbounds begin
+        t[1] = one(x)
+        d[1] = zero(x)
+        if P >= 2
+            t[2] = x
+            d[2] = one(x)
+        end
+        for n in 3:P
+            t[n] = 2x * t[n-1] - t[n-2]
+            d[n] = 2t[n-1] + 2x * d[n-1] - d[n-2]
+        end
+    end
+    return SVector(t), SVector(d)
+end
+
+"""
     chebyshev_vandermonde(x, p) -> Matrix
 
 `V[i, j+1] = T_j(x[i])` for `j = 0:p-1`.
@@ -96,22 +119,21 @@ end
 """
     clenshaw_derivative(c, x)
 
-Derivative of `Σ c[j+1] T_j` at `x`, by differentiating Clenshaw's recurrence
-(ported from the Python `chebeval_d1`).
+Derivative of `Σ c[j+1] T_j` at `x`, by differentiating Clenshaw's recurrence.
 """
-@inline function clenshaw_derivative(c::AbstractVector, x)
-    n = length(c)
+@inline clenshaw_derivative(c::AbstractVector, x) =
+    _clenshaw_derivative_range(c, firstindex(c), lastindex(c), x)
+
+# Streamed Clenshaw for coefficients c[lo:hi]: feeding the coefficients from the top,
+# b_k = c_k + 2x b_{k+1} - b_{k+2} and b'_k = 2b_{k+1} + 2x b'_{k+1} - b'_{k+2};
+# the value is c_0 + x b_1 - b_2 and the derivative b_1 + x b'_1 - b'_2.
+@inline function _clenshaw_derivative_range(c::AbstractVector, lo::Int, hi::Int, x)
     @inbounds begin
-        n == 1 && return zero(c[1] * one(x))
-        n == 2 && return c[2] * one(x)
-        x2 = 2x
-        b1 = c[n-1] + x2 * c[n]     # b_{n-2}
-        b2 = c[n] * one(x)          # b_{n-1}
-        d1 = 2 * c[n] * one(x)      # b'_{n-2}
-        d2 = zero(d1)               # b'_{n-1}
-        for k in n-2:-1:2
-            d1, d2 = 2b1 + x2 * d1 - d2, d1
-            b1, b2 = c[k] + x2 * b1 - b2, b1
+        b1 = zero(c[hi] * one(x)); b2 = b1
+        d1 = b1; d2 = b1
+        for k in hi:-1:lo+1
+            d1, d2 = 2b1 + 2x * d1 - d2, d1
+            b1, b2 = c[k] + 2x * b1 - b2, b1
         end
         return b1 + x * d1 - d2
     end
@@ -138,5 +160,33 @@ Allocation free.
         end
         w0 = _clenshaw_range(c, base + 1, base + p, x)
         return w0 + y * b1 - b2
+    end
+end
+
+"""
+    clenshaw2d_gradient(c, p, x, y) -> (∂x, ∂y)
+
+Gradient of the 2D tensor series of `clenshaw2d` at `(x, y)`, in the `[-1,1]²`
+coordinates. Allocation free: the inner sums in `x` (values `w_k` and derivatives
+`v_k`) feed one Clenshaw value recurrence and one derivative recurrence in `y`.
+"""
+@inline function clenshaw2d_gradient(c::AbstractVector, p::Int, x, y)
+    @boundscheck length(c) == p * p || throw(DimensionMismatch("expected p² coefficients"))
+    @inbounds begin
+        base = firstindex(c) - 1
+        z = zero(c[base+1] * one(x) * one(y))
+        b1 = z; b2 = z            # value recurrence in y on the v_k
+        g1 = z; g2 = z            # Clenshaw in y on the w_k …
+        d1 = z; d2 = z            # … and its derivative
+        for k in p-1:-1:1
+            lo = base + k * p + 1
+            wk = _clenshaw_range(c, lo, lo + p - 1, x)
+            vk = _clenshaw_derivative_range(c, lo, lo + p - 1, x)
+            b1, b2 = vk + 2y * b1 - b2, b1
+            d1, d2 = 2 * g1 + 2y * d1 - d2, d1
+            g1, g2 = wk + 2y * g1 - g2, g1
+        end
+        v0 = _clenshaw_derivative_range(c, base + 1, base + p, x)
+        return v0 + y * b1 - b2, g1 + y * d1 - d2
     end
 end

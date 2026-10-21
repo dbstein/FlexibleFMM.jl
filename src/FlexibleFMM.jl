@@ -2,10 +2,12 @@ module FlexibleFMM
 
 using LinearAlgebra
 using StaticArrays
-using SpecialFunctions: besselj0, bessely0, besselk
+using SpecialFunctions: besselj0, bessely0, besselj1, bessely1, besselk
+import ForwardDiff
 
 include("util.jl")
 include("kernels.jl")
+include("sources.jl")
 include("chebyshev.jl")
 include("tree/tree.jl")
 include("tree/lists.jl")
@@ -19,6 +21,7 @@ include("fmm.jl")
 include("evaluate.jl")
 
 export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest
+export Dipole, Potential, Gradient, source_field, target_field, gradient_s, gradient_t, hessian_t
 export kernel_matrix, direct, direct!, direct_self, direct_self!
 export Tree, locate, locate!, square_bbox
 export KernelIndependent, BlackBox, OperatorCache

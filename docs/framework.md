@@ -93,18 +93,48 @@ function is one shared boxed variable, and tasks race on it. Every output elemen
 written by exactly one task in a fixed order, so results are bitwise independent of
 the Julia thread count.
 
+## Sources and targets
+
+A source is a point with a density whose *type* says what singularity sits there:
+a `Number` is a charge, `Dipole(d)` (moment `d`, i.e. strength times direction) a
+double-layer source with field `d·∇ₛK`, and a tuple of densities the sum of its
+parts, so a combined single-plus-double layer runs as one FMM. The output type
+passed to `evaluate` (`Potential()` or `Gradient()`) says what is computed at a
+target. Everything the FMM needs is two functions: `source_field(K, s, t, τ)`, the
+field of one source at one point, used by `s2m!`, the near field and the reference
+sums, and `target_field(K, s, t, τ, out)`, the output operator applied to it, used
+by the near field; `l2t` has one method per output type. The translation operators
+never see a source or target, so they are untouched by any of this.
+
+Kernel derivatives (`gradient_t`, `gradient_s = -gradient_t`, `hessian_t`) are
+hand-written for the built-in kernels (through a radial-kernel helper for Helmholtz
+and Yukawa) and taken by ForwardDiff on the kernel for any other, so user kernels get
+dipoles and gradients at once; nested differentiation through that fallback works
+when the outer derivative uses ForwardDiff's own tags. The black-box method needs,
+per density type, its action on the Chebyshev basis (`accumulate_moments!`; values
+for charges, basis gradients for dipoles).
+
+Two identities fall out of this and are tested against each other
+(`test/test_sources.jl`): the derivative of the potential with respect to the source
+positions along a velocity field V is the dipole FMM with moments τⱼVⱼ, and the
+derivative with respect to the target positions is the gradient output dotted with
+the target velocity. So a Jacobian-vector product of a layer potential with respect
+to its geometry can be formed either with dual positions or as one extra FMM.
+
+Adding a singularity type (a Stokes rotlet or stresslet, say) means a struct, a
+`source_field` method, an `accumulate_moments!` method for the black-box method,
+and `target_field` methods for the outputs it should support.
+
 ## Where extensions plug in
 
 - **Another expansion scheme** (e.g. analytic Laplace/Helmholtz translations): a new
   `AbstractMethod` with the five operations and identity transforms; nothing in the
   driver changes (this is how `BlackBox` was added after `KernelIndependent`).
-- **Dipole sources / gradient targets**: new `s2m!`/near-field variants (KI: a
-  different kernel; BB: the differentiated Chebyshev basis) and `l2t` variants; the
-  translations are untouched. Vector densities belong in the density eltype
-  (`SVector`), not in side arrays.
 - **Vector kernels** (Stokes, Brinkman): `SMatrix`-valued kernels with `SVector`
-  densities; kernel matrices need explicit block assembly, and the method owns the
-  expansion length (Stokes needs a pressure/null-space slot).
+  densities through the same `source_field`/`target_field` hooks; kernel matrices
+  need explicit block assembly, the method owns the expansion length, and pressure
+  becomes an output type evaluating the pressure kernel against the equivalent
+  density.
 - **3D**: the tree, lists and driver are generic in `D`; see `docs/tree.md`.
 - **GPU** (KernelAbstractions): flat node arrays and CSR pair lists are already in
   place; `s2m!`, `l2t` and `evaluate_target` are allocation-free per-item bodies.
