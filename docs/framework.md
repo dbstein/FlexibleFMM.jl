@@ -66,6 +66,24 @@ potential in a given velocity field, at about twice the cost; see
 `test/test_forwarddiff.jl`. This is valid for infinitesimal perturbations (a source
 that leaves its box also leaves its equivalent surface).
 
+## Precision
+
+Everything follows the precision of the kernel: the built-in kernels store their
+constants in a type parameter (`Laplace2D(Float32)`, `Helmholtz2D(10f0)`), `floattype(K)`
+reports it (Float64 for a user kernel unless it defines the trait), and the operator
+builders make surfaces, nodes and matrices in that precision. Points of the same
+precision then give a Float32 tree, Float32 expansions and Float32 output, including
+with `Dual{Float32}` positions, which is the combination a Metal GPU runs. A Float64
+constant anywhere would silently promote a `Dual{Float32}` to `Dual{Float64}`, so
+kernels must not write bare `π`-containing literals. Two of the special functions
+(`hankelh1`, `besselk`) compute in Float64 regardless; Helmholtz is written through
+`besselj0`/`bessely0`, Yukawa converts the result back.
+
+In single precision the kernel-independent check maps can only resolve modes down to
+about `50·eps ≈ 6e-6`, i.e. some 20 harmonics, so the default `pinv_rtol` truncates
+there and `nequiv ≈ 40` is the useful maximum; expect about 1e-5 relative accuracy
+(`test/test_float32.jl`).
+
 ## Threading
 
 `Threads.@threads :dynamic` over contiguous chunks of leaves (`s2m!`) and of

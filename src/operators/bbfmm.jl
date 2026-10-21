@@ -27,12 +27,15 @@ end
 order(::BlackBox{K,P}) where {K,P} = P
 expansion_length(::BlackBox{K,P}) where {K,P} = P * P
 near_kernel(m::BlackBox) = m.kernel
-operator_eltype(m::BlackBox) = kernel_eltype(m.kernel, SVector{2,Float64}, SVector{2,Float64})
+function operator_eltype(m::BlackBox)
+    R = floattype(m.kernel)
+    return kernel_eltype(m.kernel, SVector{2,R}, SVector{2,R})
+end
 
-struct BBExtras
-    nodes::Vector{SVector{2,Float64}}   # tensor nodes in physical units, relative to the center
-    scale::Float64                      # 2/w
-    VI::Matrix{Float64}                 # inverse tensor Vandermonde
+struct BBExtras{R}
+    nodes::Vector{SVector{2,R}}         # tensor nodes in physical units, relative to the center
+    scale::R                            # 2/w
+    VI::Matrix{R}                       # inverse tensor Vandermonde
 end
 
 """
@@ -40,8 +43,8 @@ end
 
 `V[i, j+1 + k p] = T_j(x_i) T_k(y_i)` for points in `[-1,1]²`.
 """
-function tensor_vandermonde(points::AbstractVector{<:SVector{2}}, p::Int)
-    V = Matrix{Float64}(undef, length(points), p * p)
+function tensor_vandermonde(points::AbstractVector{SVector{2,R}}, p::Int) where {R}
+    V = Matrix{R}(undef, length(points), p * p)
     for (i, x) in enumerate(points)
         tx = chebyshev_vandermonde([x[1]], p)
         ty = chebyshev_vandermonde([x[2]], p)
@@ -54,25 +57,26 @@ end
 
 function level_operators(m::BlackBox{K,P}, w::Real) where {K,P}
     Kf = m.kernel
-    w = Float64(w)
-    nodes = chebyshev_tensor_nodes(Val(2), P)
-    VI1 = chebyshev_vandermonde_inverse(P)
+    R = floattype(Kf)
+    w = R(w)
+    nodes = chebyshev_tensor_nodes(Val(2), P, R)
+    VI1 = chebyshev_vandermonde_inverse(P, R)
     VI = kron(VI1, VI1)
     phys = [n * (w / 2) for n in nodes]
-    blocksM = Matrix{Float64}[]
-    blocksL = Matrix{Float64}[]
+    blocksM = Matrix{R}[]
+    blocksL = Matrix{R}[]
     for δ in child_offsets(Val(2))
-        shift = SVector{2,Float64}(δ) .- 0.5
+        shift = SVector{2,R}(δ) .- R(0.5)
         A = VI * tensor_vandermonde([n / 2 + shift for n in nodes], P)
         push!(blocksL, A)
         push!(blocksM, Matrix(transpose(A)))
     end
-    M2L = [M2LOperator(VI * kernel_matrix(Kf, phys .+ Ref(off * w), phys) * transpose(VI))
+    M2L = [M2LOperator(VI * kernel_matrix(Kf, phys .+ Ref(SVector{2,R}(off) * w), phys) * transpose(VI))
            for off in far_offsets(Val(2))]
     T = eltype(M2L[1].A)
-    return LevelOperators{T,BBExtras}(w, Matrix{T}(reduce(hcat, blocksM)),
-                                      Matrix{T}(reduce(vcat, blocksL)), M2L,
-                                      BBExtras(phys, 2 / w, VI))
+    return LevelOperators{T,BBExtras{R}}(w, Matrix{T}(reduce(hcat, blocksM)),
+                                         Matrix{T}(reduce(vcat, blocksL)), M2L,
+                                         BBExtras{R}(phys, 2 / w, VI))
 end
 
 """

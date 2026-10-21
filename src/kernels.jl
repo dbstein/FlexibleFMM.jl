@@ -5,40 +5,60 @@
 
 abstract type AbstractKernel end
 
+"""
+    floattype(K)
+
+The floating-point precision a kernel's constants are stored in, and hence the
+precision of the operators built from it. `Float64` unless a kernel says otherwise.
+"""
+floattype(::AbstractKernel) = Float64
+
 @inline _sqnorm(d::SVector) = sum(abs2, d)
 
 """
-    Laplace2D()
+    Laplace2D(T=Float64)
 
-Free-space Laplace Green's function `-log|t - s| / 2π`.
+Free-space Laplace Green's function `-log|t - s| / 2π`, with constants in precision `T`.
 """
-struct Laplace2D <: AbstractKernel end
-@inline function (::Laplace2D)(s::SVector{2}, t::SVector{2})
-    return -log(_sqnorm(t - s)) / (4π)
+struct Laplace2D{T<:AbstractFloat} <: AbstractKernel
+    c::T       # -1/(4π): the kernel is c·log(r²)
 end
+Laplace2D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace2D{T}(-1 / (4 * T(π)))
+floattype(::Laplace2D{T}) where {T} = T
+@inline (K::Laplace2D)(s::SVector{2}, t::SVector{2}) = K.c * log(_sqnorm(t - s))
 
 """
     Helmholtz2D(k)
 
-Helmholtz Green's function `(i/4) H₀⁽¹⁾(k |t - s|)` (complex valued).
+Helmholtz Green's function `(i/4) H₀⁽¹⁾(k |t - s|)` (complex valued), written as
+`(i/4)(J₀ + i·Y₀)` so that it keeps the precision of `k` (`Float32` included).
 """
-struct Helmholtz2D{T<:Real} <: AbstractKernel
+struct Helmholtz2D{T<:AbstractFloat} <: AbstractKernel
     k::T
+    c::Complex{T}
 end
+Helmholtz2D(k::Real) = (T = typeof(float(k)); Helmholtz2D{T}(T(k), Complex{T}(0, 1 // 4)))
+floattype(::Helmholtz2D{T}) where {T} = T
 @inline function (K::Helmholtz2D)(s::SVector{2}, t::SVector{2})
-    return (im / 4) * hankelh1(0, K.k * sqrt(_sqnorm(t - s)))
+    kr = K.k * sqrt(_sqnorm(t - s))
+    return K.c * (besselj0(kr) + im * bessely0(kr))
 end
 
 """
     Yukawa2D(k)
 
-Modified Helmholtz Green's function `K₀(k |t - s|) / 2π`.
+Modified Helmholtz Green's function `K₀(k |t - s|) / 2π` in the precision of `k`
+(`besselk` computes in Float64; the result is converted back).
 """
-struct Yukawa2D{T<:Real} <: AbstractKernel
+struct Yukawa2D{T<:AbstractFloat} <: AbstractKernel
     k::T
+    c::T       # 1/(2π)
 end
+Yukawa2D(k::Real) = (T = typeof(float(k)); Yukawa2D{T}(T(k), 1 / (2 * T(π))))
+floattype(::Yukawa2D{T}) where {T} = T
 @inline function (K::Yukawa2D)(s::SVector{2}, t::SVector{2})
-    return besselk(0, K.k * sqrt(_sqnorm(t - s))) / (2π)
+    kr = K.k * sqrt(_sqnorm(t - s))
+    return K.c * oftype(kr, besselk(0, kr))
 end
 
 """
@@ -50,13 +70,17 @@ translation invariant, so every expansion scheme here is exact for it, but it is
 symmetric under `s ↔ t`. Radial kernels hide any transposed operator; this one does
 not, which is its only purpose.
 """
-struct LaplaceDipoleTest{T<:Real} <: AbstractKernel
+struct LaplaceDipoleTest{T<:AbstractFloat} <: AbstractKernel
     c::T
+    a::T       # -1/(4π)
+    b::T       # 1/(2π)
 end
+LaplaceDipoleTest(c::Real) = (T = typeof(float(c)); LaplaceDipoleTest{T}(T(c), -1 / (4 * T(π)), 1 / (2 * T(π))))
+floattype(::LaplaceDipoleTest{T}) where {T} = T
 @inline function (K::LaplaceDipoleTest)(s::SVector{2}, t::SVector{2})
     d = t - s
     r2 = _sqnorm(d)
-    return -log(r2) / (4π) + K.c * d[1] / (2π * r2)
+    return K.a * log(r2) + K.c * K.b * d[1] / r2
 end
 
 """

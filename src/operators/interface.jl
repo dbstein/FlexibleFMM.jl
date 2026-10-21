@@ -61,5 +61,5 @@ eltype `Tτ`: the operator eltype promoted with the kernel's output on such posi
 function expansion_eltype(m::AbstractMethod, ::Type{Tpos}, ::Type{Tτ}) where {Tpos,Tτ}
     K = near_kernel(m)
     return promote_type(operator_eltype(m),
-                        kernel_eltype(K, SVector{2,Tpos}, SVector{2,Float64}), Tτ)
+                        kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)}), Tτ)
 end

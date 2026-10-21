@@ -37,6 +37,9 @@ densities; an `OperatorCache` passed to several `FMM`s shares their translation
 operators (root boxes are snapped to cached widths). Targets must lie inside the
 root box.
 
+Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
+points gives a single-precision tree, operators, expansions and output.
+
 Accuracy: the kernel-independent method with `nequiv` points is accurate to about
 `0.547^(nequiv/2)` (`1e-8` at 60, `1e-13` at 100); see `docs/kifmm.md` for why,
 and for the two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz

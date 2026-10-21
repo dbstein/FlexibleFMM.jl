@@ -8,7 +8,7 @@ rng = MersenneTwister(1)
     @test Laplace2D()(s, t) ≈ -log(r) / (2π)
     @test Laplace2D()(s, t) == Laplace2D()(t, s)
     K = Helmholtz2D(3.0)
-    @test K(s, t) ≈ (im / 4) * (SpecialFunctions.besselj0(3r) + im * SpecialFunctions.bessely0(3r))
+    @test K(s, t) ≈ (im / 4) * SpecialFunctions.hankelh1(0, 3r)
     @test K(s, t) == K(t, s)
     Y = Yukawa2D(2.0)
     @test Y(s, t) ≈ SpecialFunctions.besselk(0, 2r) / (2π)
@@ -29,6 +29,8 @@ end
     @test kernel_eltype(Helmholtz2D(1.0), P2, P2) == ComplexF64
     @test kernel_eltype(Yukawa2D(1.0), P2, P2) == Float64
     @test kernel_eltype(LaplaceDipoleTest(1.0), P2, P2) == Float64
+    @test Helmholtz2D(2) isa Helmholtz2D{Float64}
+    @test FlexibleFMM.floattype(Laplace2D()) == Float64
 end
 
 @testset "harmonicity of the test kernel" begin

@@ -2,7 +2,7 @@ module FlexibleFMM
 
 using LinearAlgebra
 using StaticArrays
-using SpecialFunctions: hankelh1, besselk
+using SpecialFunctions: besselj0, bessely0, besselk
 
 include("util.jl")
 include("kernels.jl")

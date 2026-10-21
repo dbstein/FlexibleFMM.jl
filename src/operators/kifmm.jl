@@ -32,12 +32,13 @@ struct KernelIndependent{K} <: AbstractMethod
 end
 
 """
-    KernelIndependent(kernel; nequiv=50, pinv_rtol=1e-14)
+    KernelIndependent(kernel; nequiv=50, pinv_rtol=50·eps(floattype(kernel)))
 
 The kernel-independent method with `nequiv` points per equivalent/check circle.
-Singular values of the check maps below `pinv_rtol` times the largest are dropped.
+Singular values of the check maps below `pinv_rtol` times the largest are dropped;
+the default (1e-14 in Float64, 6e-6 in Float32) is where they become rounding noise.
 """
-function KernelIndependent(kernel; nequiv::Integer=50, pinv_rtol::Real=1e-14)
+function KernelIndependent(kernel; nequiv::Integer=50, pinv_rtol::Real=50 * eps(floattype(kernel)))
     nequiv >= 4 || throw(ArgumentError("nequiv must be at least 4"))
     return KernelIndependent(kernel, Int(nequiv), Float64(pinv_rtol))
 end
@@ -51,11 +52,11 @@ const KI_LARGE_RADIUS = (4 - sqrt(2)) / 2
 Truncated pseudo-inverse `V·Diagonal(invS)·Uᴴ` kept as factors; `apply!` uses them in
 sequence so that the amplified rounding stays in the attenuated modes.
 """
-struct FactoredPinv{T}
+struct FactoredPinv{T,R}
     Uh::Matrix{T}        # rank × m   (adjoint of the kept left singular vectors)
-    invS::Vector{Float64}
+    invS::Vector{R}
     V::Matrix{T}         # n × rank
-    sigma::Vector{Float64}
+    sigma::Vector{R}
 end
 rank(P::FactoredPinv) = length(P.invS)
 
@@ -69,7 +70,7 @@ function pinv_rtol(A::AbstractMatrix, rtol::Real)
     σ = F.S
     r = count(s -> s >= rtol * σ[1], σ)
     T = eltype(A)
-    return FactoredPinv{T}(Matrix{T}(F.U[:, 1:r]'), 1 ./ σ[1:r], Matrix{T}(F.V[:, 1:r]), σ)
+    return FactoredPinv{T,real(T)}(Matrix{T}(F.U[:, 1:r]'), 1 ./ σ[1:r], Matrix{T}(F.V[:, 1:r]), σ)
 end
 Base.Matrix(P::FactoredPinv) = P.V * Diagonal(P.invS) * P.Uh
 
@@ -88,38 +89,43 @@ function apply!(out::AbstractVecOrMat, P::FactoredPinv, x::AbstractVecOrMat, wor
     return out
 end
 
-struct KIExtras{T}
-    small::Vector{SVector{2,Float64}}
-    large::Vector{SVector{2,Float64}}
-    P_up::FactoredPinv{T}       # check potentials on large → density on small
-    P_down::FactoredPinv{T}     # check potentials on small → density on large
+struct KIExtras{T,R}
+    small::Vector{SVector{2,R}}
+    large::Vector{SVector{2,R}}
+    P_up::FactoredPinv{T,R}     # check potentials on large → density on small
+    P_down::FactoredPinv{T,R}   # check potentials on small → density on large
 end
 
 expansion_length(m::KernelIndependent) = m.nequiv
 near_kernel(m::KernelIndependent) = m.kernel
-operator_eltype(m::KernelIndependent) =
-    kernel_eltype(m.kernel, SVector{2,Float64}, SVector{2,Float64})
+function operator_eltype(m::KernelIndependent)
+    R = floattype(m.kernel)
+    return kernel_eltype(m.kernel, SVector{2,R}, SVector{2,R})
+end
 
-circle_points(n::Int, r::Real) = [r * SVector(cos(θ), sin(θ)) for θ in 2π .* (0:n-1) ./ n]
+function circle_points(n::Int, r::R) where {R<:AbstractFloat}
+    return [r * SVector{2,R}(cos(θ), sin(θ)) for θ in (2 * R(π) / n) .* (0:n-1)]
+end
 
 function level_operators(m::KernelIndependent, w::Real)
     K = m.kernel
     N = m.nequiv
-    w = Float64(w)
-    small = circle_points(N, KI_SMALL_RADIUS * w)
-    large = circle_points(N, KI_LARGE_RADIUS * w)
+    R = floattype(K)
+    w = R(w)
+    small = circle_points(N, R(KI_SMALL_RADIUS) * w)
+    large = circle_points(N, R(KI_LARGE_RADIUS) * w)
     P_up = pinv_rtol(kernel_matrix(K, small, large), m.pinv_rtol)
     P_down = pinv_rtol(kernel_matrix(K, large, small), m.pinv_rtol)
     # children: width w/2, centers at (δ - 1/2)·w/2 relative to the parent
-    child_small = circle_points(N, KI_SMALL_RADIUS * w / 2)
-    centers = [(SVector{2,Float64}(δ) .- 0.5) * (w / 2) for δ in child_offsets(Val(2))]
+    child_small = circle_points(N, R(KI_SMALL_RADIUS) * w / 2)
+    centers = [(SVector{2,R}(δ) .- R(0.5)) * (w / 2) for δ in child_offsets(Val(2))]
     all_child_small = reduce(vcat, [child_small .+ Ref(c) for c in centers])
     M2M = kernel_matrix(K, all_child_small, large)
     L2L = kernel_matrix(K, large, all_child_small)
     T = eltype(M2M)
-    M2L = [M2LOperator(kernel_matrix(K, small .+ Ref(off * w), small)) for off in far_offsets(Val(2))]
-    extra = KIExtras{T}(small, large, P_up, P_down)
-    return LevelOperators{T,KIExtras{T}}(w, M2M, L2L, M2L, extra)
+    M2L = [M2LOperator(kernel_matrix(K, small .+ Ref(SVector{2,R}(off) * w), small)) for off in far_offsets(Val(2))]
+    extra = KIExtras{T,R}(small, large, P_up, P_down)
+    return LevelOperators{T,KIExtras{T,R}}(w, M2M, L2L, M2L, extra)
 end
 
 """
@@ -128,7 +134,7 @@ end
 Diagnostics of the check maps of a level: smallest-to-largest singular value ratios
 and how many modes the truncation dropped.
 """
-function conditioning(ops::LevelOperators{T,KIExtras{T}}) where {T}
+function conditioning(ops::LevelOperators{T,KIExtras{T,R}}) where {T,R}
     e = ops.extra
     su, sd = e.P_up.sigma, e.P_down.sigma
     return (su[end] / su[1], sd[end] / sd[1], length(su) - rank(e.P_up), length(sd) - rank(e.P_down))

@@ -48,4 +48,7 @@ include("operator_checks.jl")
     @testset "cache" begin
         include("test_cache.jl")
     end
+    @testset "Float32" begin
+        include("test_float32.jl")
+    end
 end
