@@ -114,3 +114,11 @@ function as_svectors(::Val{D}, X::AbstractMatrix{T}) where {D,T}
     size(X, 1) == D || throw(DimensionMismatch("expected a $D × N matrix, got $(size(X))"))
     return [SVector{D,T}(ntuple(d -> X[d, j], Val(D))) for j in axes(X, 2)]
 end
+
+"""
+    point_dimension(X)
+
+`D` for a vector of `SVector{D}` or a `D × N` matrix.
+"""
+point_dimension(::AbstractVector{<:SVector{D}}) where {D} = D
+point_dimension(X::AbstractMatrix) = size(X, 1)

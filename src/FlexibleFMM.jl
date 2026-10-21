@@ -21,7 +21,7 @@ include("fmm.jl")
 include("evaluate.jl")
 include("stokes_api.jl")
 
-export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest, Stokeslet2D, pressure_kernel
+export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest, Stokeslet2D, pressure_kernel, homogeneity
 export Dipole, Stresslet, Doublet, Rotlet, Potential, Velocity, Gradient, Pressure
 export source_field, target_field, gradient_s, gradient_t, hessian_t
 export StokesFMMPlan, stokes_fmm_eval!, stokes_fmm_eval_src_trg!, StokesFMMKernel, StokesFMMKernel!, stokes_densities

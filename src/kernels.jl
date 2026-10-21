@@ -173,14 +173,26 @@ Type returned by `K(::S, ::T)`: a number, or an `SMatrix` for vector kernels.
 kernel_eltype(K, ::Type{S}, ::Type{T}) where {S,T} = Base.promote_op(K, S, T)
 
 """
-    ncomp(K)
+    ncomp(K, Val(D))
 
-Number of components of the fields of `K`: 1 for a scalar kernel, `m` for an
-`SMatrix{m,n}`-valued one.
+Number of components of the fields of `K` in `D` dimensions: 1 for a scalar kernel,
+`m` for an `SMatrix{m,n}`-valued one. The dimension is a `Val` so that the result
+constant-folds in the per-point bodies.
 """
-ncomp(K) = _ncomp(kernel_eltype(K, SVector{2,floattype(K)}, SVector{2,floattype(K)}))
+ncomp(K, ::Val{D}) where {D} = _ncomp(kernel_eltype(K, SVector{D,floattype(K)}, SVector{D,floattype(K)}))
 _ncomp(::Type{<:Number}) = 1
 _ncomp(::Type{<:SMatrix{m}}) where {m} = m
+
+"""
+    homogeneity(K)
+
+The degree `a` such that `K(λs, λt) = λ^a K(s, t)` for all `λ > 0`, or `nothing` if
+the kernel is not homogeneous. For a homogeneous kernel the translation operators of
+all box widths are scalar multiples of one reference set, which the operator cache
+then shares between levels (none of the built-in 2D kernels qualifies: they contain
+logarithms or Bessel functions; 3D power-law kernels do).
+"""
+homogeneity(K) = nothing
 
 """
     kernel_matrix(K, sources, targets) -> Matrix

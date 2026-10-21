@@ -57,4 +57,7 @@ include("operator_checks.jl")
     @testset "Stokes" begin
         include("test_stokes.jl")
     end
+    @testset "homogeneous kernels" begin
+        include("test_homogeneous.jl")
+    end
 end

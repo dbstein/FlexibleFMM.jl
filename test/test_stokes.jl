@@ -26,7 +26,7 @@ end
 @testset "Stokes singularities satisfy the Stokes equations" begin
     s = P2(0.1, 0.2); t = P2(0.7, -0.3)
     f = P2(0.4, -1.1); ν = normalize(P2(0.3, 0.8)); g = P2(-0.6, 0.2)
-    @test ncomp(K2) == 2
+    @test ncomp(K2, Val(2)) == 2
     @test K2(s, t) isa SMatrix{2,2,Float64}
     @test K2(s, t) ≈ transpose(K2(s, t))
     @test K2(s, t) ≈ K2(t, s)

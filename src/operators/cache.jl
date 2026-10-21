@@ -24,13 +24,23 @@ Base.length(c::OperatorCache) = length(c.ops)
 """
     get_operators!(cache, e)
 
-Operators for width `ldexp(cache.W0, e)`, built on first use.
+Operators for width `ldexp(cache.W0, e)`, built on first use. For a homogeneous
+kernel only the reference width (exponent 0) is built; every other width shares its
+matrices through `rescale`.
 """
 function get_operators!(c::OperatorCache, e::Int)
     has_base_width(c) || error("fit a box before requesting operators")
-    return get!(c.ops, e) do
-        level_operators(c.method, ldexp(c.W0, e))
+    haskey(c.ops, e) && return c.ops[e]
+    m = c.method
+    w = ldexp(c.W0, e)
+    if homogeneity(near_kernel(m)) === nothing || e == 0
+        ops = level_operators(m, w)
+    else
+        ref = get_operators!(c, 0)
+        ops = rescale(ref, m, w)
     end
+    c.ops[e] = ops
+    return ops
 end
 
 """

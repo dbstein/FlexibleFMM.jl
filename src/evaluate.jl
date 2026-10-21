@@ -18,7 +18,7 @@ end
 Output `out` at `x`, located in leaf `i`; the source with tree index `skip` is
 excluded (0 for none).
 """
-@inline function evaluate_target(f::FMM, state::FMMState, x::SVector{2}, i::Int, skip::Int, out=Potential())
+@inline function evaluate_target(f::FMM{D}, state::FMMState, x::SVector{D}, i::Int, skip::Int, out=Potential()) where {D}
     tree = f.tree
     m = f.method
     K = near_kernel(m)
@@ -32,12 +32,12 @@ excluded (0 for none).
     return u
 end
 
-function _output_eltype(f::FMM, state::FMMState, ::Type{Tt}, out) where {Tt}
+function _output_eltype(f::FMM{D}, state::FMMState, ::Type{Tt}, out) where {D,Tt}
     K = near_kernel(f.method)
-    Tnear = Base.promote_op(target_field, typeof(K), eltype(state.sources), SVector{2,Tt},
+    Tnear = Base.promote_op(target_field, typeof(K), eltype(state.sources), SVector{D,Tt},
                             eltype(state.τ), typeof(out))
     Tfar = Base.promote_op(l2t, typeof(f.method), eltype(f.ops), typeof(view(state.locals, :, 1)),
-                           SVector{2,Tt}, typeof(out))
+                           SVector{D,Tt}, typeof(out))
     return promote_type(Tnear, Tfar)
 end
 
@@ -52,9 +52,9 @@ function _check_output(f::FMM, output)
         throw(ArgumentError("output $(typeof(output)) is not available with $(typeof(f.method).name.name)"))
 end
 
-function evaluate!(out::AbstractVector, f::FMM, state::FMMState, targets; output=Potential())
+function evaluate!(out::AbstractVector, f::FMM{D}, state::FMMState, targets; output=Potential()) where {D}
     _check_output(f, output)
-    ts = as_svectors(Val(2), targets)
+    ts = as_svectors(Val(D), targets)
     nt = length(ts)
     length(out) == nt || throw(DimensionMismatch("out and targets differ in length"))
     nodes = locate(f.tree, ts)
@@ -69,8 +69,8 @@ function evaluate!(out::AbstractVector, f::FMM, state::FMMState, targets; output
     return out
 end
 
-function evaluate(f::FMM, state::FMMState, targets; output=Potential())
-    ts = as_svectors(Val(2), targets)
+function evaluate(f::FMM{D}, state::FMMState, targets; output=Potential()) where {D}
+    ts = as_svectors(Val(D), targets)
     out = Vector{_output_eltype(f, state, eltype(eltype(ts)), output)}(undef, length(ts))
     return evaluate!(out, f, state, ts; output=output)
 end

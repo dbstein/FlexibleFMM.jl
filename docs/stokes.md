@@ -58,6 +58,12 @@ curve has zero net flux through every enclosing curve.
   due to sources outside it has zero flux. The upward check map is rank deficient by
   one and the truncated SVD drops that mode.
 
+Both extras are nondimensionalised with the box width (the row is `w·p`, the
+source strength is per unit width), so that they scale with the width exactly like
+the velocity kernel: the augmented operators of a homogeneous kernel stay scalar
+multiples of a reference set (`docs/framework.md`), and the pressure pin carries
+the same least-squares weight on every level.
+
 The black-box method interpolates the stokeslet, so a singularity must be a
 differential operator in the source applied to the stokeslet: stokeslets (values of
 the basis), rotlets (basis gradient) and doublets (half the basis Laplacian) are

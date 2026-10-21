@@ -21,7 +21,18 @@ to use in the near field.
 Because the tree makes every translation a same-width one, `level_operators(m, w)`
 builds everything for width `w` once and an `OperatorCache` keyed by the integer
 exponent `e` (width `ldexp(W0, e)`) shares it between levels and between FMM
-instances; root boxes are snapped to such widths (`fit_box!`).
+instances; root boxes are snapped to such widths (`fit_box!`). A method states its
+`dimension(m)`; the tree, lists, driver and evaluation are generic in it.
+
+For a kernel that is homogeneous, `K(λs, λt) = λᵃ K(s, t)` (declared by
+`homogeneity(K) = a`; 3D power-law kernels, none of the built-in 2D ones), the
+operators of all widths are scalar multiples of one reference set: the cache builds
+the reference width only and `rescale` makes the other widths from it, sharing the
+matrices and carrying per-width factors (`m2m_scale`, `l2l_scale`, `m2l_scale`, and
+the inverse factor on the pseudo-inverses) that the driver applies through the α
+argument of `mul!`. For this to hold with the Stokes augmentations, the pinned
+pressure row and the point-source column are nondimensionalised with the box width,
+which also makes the pin's least-squares weight the same on every level.
 
 ## The passes
 

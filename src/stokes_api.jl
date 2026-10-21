@@ -13,12 +13,20 @@ vectors of `SVector{2}` or `2 × N` matrices). `method` is `:ki` (kernel indepen
 `nequiv` points per circle; supports every singularity and the pressure) or `:bb`
 (black box, order `p`; stokeslets, doublets and rotlets, velocity only).
 """
-mutable struct StokesFMMPlan{F<:FMM,T}
+mutable struct StokesFMMPlan{D,F<:FMM,T}
     fmm::F
-    sources::Vector{SVector{2,T}}
-    targets::Union{Nothing,Vector{SVector{2,T}}}
+    sources::Vector{SVector{D,T}}
+    targets::Union{Nothing,Vector{SVector{D,T}}}
     state::Any
 end
+
+"""
+    stokeslet_kernel(::Val{D}, precision)
+
+The Stokes kernel of the Stokes front end in `D` dimensions.
+"""
+stokeslet_kernel(::Val{2}, ::Type{T}) where {T} = Stokeslet2D(T)
+stokeslet_kernel(::Val{D}, ::Type{T}) where {D,T} = throw(ArgumentError("no Stokes kernel in $D dimensions yet"))
 
 _value(x::Real) = x
 _value(x::ForwardDiff.Dual) = ForwardDiff.value(x)
@@ -27,17 +35,18 @@ _values(pts::AbstractVector{<:SVector{D}}) where {D} = [SVector{D}(map(_value, p
 function StokesFMMPlan(sources; targets=nothing, method::Symbol=:ki, nequiv::Integer=60,
                        p::Integer=12, ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64,
                        cache=nothing)
-    K = Stokeslet2D(precision)
+    D = point_dimension(sources)
+    K = stokeslet_kernel(Val(D), precision)
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
         method === :bb ? BlackBox(K; p=p) :
         throw(ArgumentError("method must be :ki or :bb"))
-    pts = _values(as_svectors(Val(2), sources))
-    tgts = targets === nothing ? nothing : _values(as_svectors(Val(2), targets))
+    pts = _values(as_svectors(Val(D), sources))
+    tgts = targets === nothing ? nothing : _values(as_svectors(Val(D), targets))
     if bbox === nothing
         bbox = square_bbox(tgts === nothing ? pts : vcat(pts, tgts))
     end
     f = cache === nothing ? FMM(m, pts; ppl=ppl, bbox=bbox) : FMM(m, pts; ppl=ppl, bbox=bbox, cache=cache)
-    return StokesFMMPlan{typeof(f),eltype(eltype(pts))}(f, pts, tgts, nothing)
+    return StokesFMMPlan{D,typeof(f),eltype(eltype(pts))}(f, pts, tgts, nothing)
 end
 
 # One density entry per source: a tuple of the singularities present (weighted).
@@ -61,16 +70,16 @@ function stokes_densities(n::Int; weights=nothing, stokeslets=nothing, stresslet
     return [_parts(j, weights, stokeslets, stresslets, stressvecs, doublets) for j in 1:n]
 end
 
-function _state!(plan::StokesFMMPlan, srcs, τ)
+function _state!(plan::StokesFMMPlan{D}, srcs, τ) where {D}
     Tp = eltype(eltype(srcs))
     Tτ = eltype(τ)
     S = expansion_eltype(plan.fmm.method, Tp, Tτ)
     st = plan.state
-    if !(st isa FMMState{S,SVector{2,Tp},Tτ})
+    if !(st isa FMMState{S,SVector{D,Tp},Tτ})
         st = FMMState(plan.fmm, S, Tp, Tτ)
         plan.state = st
     end
-    return st::FMMState{S,SVector{2,Tp},Tτ}
+    return st::FMMState{S,SVector{D,Tp},Tτ}
 end
 
 """
@@ -83,12 +92,12 @@ themselves for a self plan, from the given densities. `sources`/`targets` may
 override the positions (same points, e.g. dual numbers whose values match the
 plan's geometry) for directional derivatives.
 """
-function stokes_fmm_eval!(velocities::AbstractVector, plan::StokesFMMPlan;
+function stokes_fmm_eval!(velocities::AbstractVector, plan::StokesFMMPlan{D};
                           stokeslets=nothing, stresslets=nothing, stressvecs=nothing, doublets=nothing,
-                          weights=nothing, sources=nothing, targets=nothing, output=Velocity())
+                          weights=nothing, sources=nothing, targets=nothing, output=Velocity()) where {D}
     f = plan.fmm
     n = npoints(f.tree)
-    srcs = sources === nothing ? _plan_sources(plan) : as_svectors(Val(2), sources)
+    srcs = sources === nothing ? _plan_sources(plan) : as_svectors(Val(D), sources)
     τ = stokes_densities(n; weights=weights, stokeslets=stokeslets, stresslets=stresslets,
                          stressvecs=stressvecs, doublets=doublets)
     st = _state!(plan, srcs, τ)
@@ -96,7 +105,7 @@ function stokes_fmm_eval!(velocities::AbstractVector, plan::StokesFMMPlan;
     if plan.targets === nothing && targets === nothing
         return evaluate_at_sources!(velocities, f, st; output=output)
     else
-        tg = targets === nothing ? plan.targets : as_svectors(Val(2), targets)
+        tg = targets === nothing ? plan.targets : as_svectors(Val(D), targets)
         return evaluate!(velocities, f, st, tg; output=output)
     end
 end
@@ -107,19 +116,19 @@ end
 One expansion build, two evaluations: at the sources (self, i = j skipped) into
 `vel_src` and at the plan's targets into `vel_trg`.
 """
-function stokes_fmm_eval_src_trg!(vel_src::AbstractVector, vel_trg::AbstractVector, plan::StokesFMMPlan;
+function stokes_fmm_eval_src_trg!(vel_src::AbstractVector, vel_trg::AbstractVector, plan::StokesFMMPlan{D};
                                   stokeslets=nothing, stresslets=nothing, stressvecs=nothing, doublets=nothing,
-                                  weights=nothing, sources=nothing, targets=nothing, output=Velocity())
+                                  weights=nothing, sources=nothing, targets=nothing, output=Velocity()) where {D}
     plan.targets === nothing && targets === nothing && throw(ArgumentError("the plan has no targets"))
     f = plan.fmm
     n = npoints(f.tree)
-    srcs = sources === nothing ? _plan_sources(plan) : as_svectors(Val(2), sources)
+    srcs = sources === nothing ? _plan_sources(plan) : as_svectors(Val(D), sources)
     τ = stokes_densities(n; weights=weights, stokeslets=stokeslets, stresslets=stresslets,
                          stressvecs=stressvecs, doublets=doublets)
     st = _state!(plan, srcs, τ)
     build_expansions!(st, f, srcs, τ)
     evaluate_at_sources!(vel_src, f, st; output=output)
-    tg = targets === nothing ? plan.targets : as_svectors(Val(2), targets)
+    tg = targets === nothing ? plan.targets : as_svectors(Val(D), targets)
     evaluate!(vel_trg, f, st, tg; output=output)
     return vel_src, vel_trg
 end
@@ -139,9 +148,10 @@ weights are allowed.
 function StokesFMMKernel!(velocities::AbstractVector, sources; weights=nothing, targets=nothing,
                           stokeslets=nothing, stresslets=nothing, stressvecs=nothing, doublets=nothing,
                           force_self_eval::Bool=false, output=Velocity(), kwargs...)
-    srcs = as_svectors(Val(2), sources)
+    D = point_dimension(sources)
+    srcs = as_svectors(Val(D), sources)
     self = targets === nothing || sources === targets || force_self_eval
-    tgts = self ? nothing : as_svectors(Val(2), targets)
+    tgts = self ? nothing : as_svectors(Val(D), targets)
     plan = StokesFMMPlan(srcs; targets=tgts, kwargs...)
     return stokes_fmm_eval!(velocities, plan; stokeslets=stokeslets, stresslets=stresslets,
                             stressvecs=stressvecs, doublets=doublets, weights=weights,
@@ -149,12 +159,13 @@ function StokesFMMKernel!(velocities::AbstractVector, sources; weights=nothing, 
 end
 function StokesFMMKernel(sources; weights=nothing, targets=nothing, stokeslets=nothing, stresslets=nothing,
                          stressvecs=nothing, doublets=nothing, force_self_eval::Bool=false, output=Velocity(), kwargs...)
-    srcs = as_svectors(Val(2), sources)
+    D = point_dimension(sources)
+    srcs = as_svectors(Val(D), sources)
     self = targets === nothing || sources === targets || force_self_eval
-    tgts = self ? srcs : as_svectors(Val(2), targets)
+    tgts = self ? srcs : as_svectors(Val(D), targets)
     τ = stokes_densities(length(srcs); weights=weights, stokeslets=stokeslets, stresslets=stresslets,
                          stressvecs=stressvecs, doublets=doublets)
-    K = Stokeslet2D(get(kwargs, :precision, Float64))
+    K = stokeslet_kernel(Val(D), get(kwargs, :precision, Float64))
     OT = Base.promote_op(target_field, typeof(K), eltype(srcs), eltype(tgts), eltype(τ), typeof(output))
     velocities = Vector{OT}(undef, length(tgts))
     return StokesFMMKernel!(velocities, srcs; weights=weights, targets=self ? nothing : tgts,

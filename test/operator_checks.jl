@@ -8,7 +8,7 @@ using FlexibleFMM: level_operators, s2m!, l2t, multipole_field, expansion_length
 
 box_points(rng, c, w, n) = [c + w * (P2(rand(rng), rand(rng)) .- 0.5) for _ in 1:n]
 # random densities of the kind the kernel takes: scalars, or SVectors for Stokes
-random_density(rng, K, n) = ncomp(K) == 1 ? randn(rng, n) : [P2(randn(rng), randn(rng)) for _ in 1:n]
+random_density(rng, K, n) = ncomp(K, Val(2)) == 1 ? randn(rng, n) : [P2(randn(rng), randn(rng)) for _ in 1:n]
 
 function multipole_of(m, ops, xs, τ, c)
     S = promote_type(density_scalar(eltype(τ)), operator_eltype(m))

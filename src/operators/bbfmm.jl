@@ -25,7 +25,8 @@ function BlackBox(kernel; p::Integer=8)
 end
 
 order(::BlackBox{K,P}) where {K,P} = P
-expansion_length(m::BlackBox{K,P}) where {K,P} = ncomp(m.kernel) * P * P
+dimension(::BlackBox) = 2
+expansion_length(m::BlackBox{K,P}) where {K,P} = ncomp(m.kernel, Val(2)) * P * P
 near_kernel(m::BlackBox) = m.kernel
 function operator_eltype(m::BlackBox)
     R = floattype(m.kernel)
@@ -61,7 +62,7 @@ function level_operators(m::BlackBox{K,P}, w::Real) where {K,P}
     Kf = m.kernel
     R = floattype(Kf)
     w = R(w)
-    nc = ncomp(Kf)
+    nc = ncomp(Kf, Val(2))
     nodes = chebyshev_tensor_nodes(Val(2), P, R)
     VI1 = chebyshev_vandermonde_inverse(P, R)
     VI = kron(VI1, VI1)
@@ -79,9 +80,18 @@ function level_operators(m::BlackBox{K,P}, w::Real) where {K,P}
     M2L = [M2LOperator(VIc * kernel_matrix(Kf, phys .+ Ref(SVector{2,R}(off) * w), phys) * transpose(VIc))
            for off in far_offsets(Val(2))]
     T = eltype(M2L[1].A)
-    return LevelOperators{T,BBExtras{R}}(w, Matrix{T}(reduce(hcat, blocksM)),
-                                         Matrix{T}(reduce(vcat, blocksL)), M2L,
-                                         BBExtras{R}(phys, 2 / w, VI))
+    return LevelOperators(w, Matrix{T}(reduce(hcat, blocksM)), Matrix{T}(reduce(vcat, blocksL)), M2L,
+                          BBExtras{R}(phys, 2 / w, VI))
+end
+
+# M2M and L2L are pure interpolation (width independent); only the M2L scales.
+function rescale(ref::LevelOperators{T,R,BBExtras{R}}, m::BlackBox, w::Real) where {T,R}
+    a = homogeneity(m.kernel)
+    a === nothing && throw(ArgumentError("rescale needs a homogeneous kernel"))
+    λ = R(w) / ref.width
+    e = ref.extra
+    return LevelOperators{T,R,BBExtras{R}}(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
+                                           ref.m2l_scale * λ^a, BBExtras{R}(e.nodes .* λ, e.scale / λ, e.VI))
 end
 
 """
@@ -191,7 +201,7 @@ The local Chebyshev series (or its gradient) at `xrel` relative to the box cente
 """
 @inline function l2t(m::BlackBox{K,P}, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Potential=Potential()) where {K,P}
     x̂ = xrel * ops.extra.scale
-    return _bb_value(Val(ncomp(m.kernel)), L, P, x̂)
+    return _bb_value(Val(ncomp(m.kernel, Val(2))), L, P, x̂)
 end
 @inline _bb_value(::Val{1}, L, P, x̂) = clenshaw2d(L, P, x̂[1], x̂[2])
 @inline function _bb_value(::Val{nc}, L, P, x̂) where {nc}
@@ -200,7 +210,7 @@ end
 @inline function l2t(m::BlackBox{K,P}, ops::LevelOperators, L::AbstractVector, xrel::SVector{2}, ::Gradient) where {K,P}
     s = ops.extra.scale
     x̂ = xrel * s
-    return _bb_gradient(Val(ncomp(m.kernel)), L, P, x̂) * s
+    return _bb_gradient(Val(ncomp(m.kernel, Val(2))), L, P, x̂) * s
 end
 @inline function _bb_gradient(::Val{1}, L, P, x̂)
     gx, gy = clenshaw2d_gradient(L, P, x̂[1], x̂[2])
@@ -224,8 +234,8 @@ function multipole_field(m::BlackBox, ops::LevelOperators, M::AbstractVector, xr
     K = m.kernel
     nodes = ops.extra.nodes
     nn = length(nodes)
-    nc = Val(ncomp(K))
-    wts = kron(Matrix{eltype(ops.extra.VI)}(I, ncomp(K), ncomp(K)), transpose(ops.extra.VI)) * M
+    nc = Val(ncomp(K, Val(2)))
+    wts = kron(Matrix{eltype(ops.extra.VI)}(I, ncomp(K, Val(2)), ncomp(K, Val(2))), transpose(ops.extra.VI)) * M
     S = promote_type(eltype(wts), eltype(kernel_eltype(K, eltype(nodes), typeof(xrel))))
     acc = _field_zero(S, nc)
     for n in 1:nn

@@ -30,7 +30,9 @@ the operators of its levels from `cache`. The root box is `bbox = (origin, width
 function FMM(method::AbstractMethod, sources; ppl::Integer=50, bbox=nothing,
              cache::OperatorCache=OperatorCache(method), max_levels::Integer=30)
     cache.method === method || throw(ArgumentError("the cache was built for a different method"))
-    pts = as_svectors(Val(2), sources)
+    D = point_dimension(sources)
+    D == dimension(method) || throw(ArgumentError("$(D)-dimensional points with a $(dimension(method))-dimensional method"))
+    pts = as_svectors(Val(D), sources)
     origin, W0, e0 = fit_box!(cache, pts, bbox)
     tree = Tree(pts; ppl=ppl, bbox=(origin, W0), max_levels=max_levels)
     L = nlevels(tree)
@@ -97,12 +99,12 @@ function _s2m_level!(pM::AbstractMatrix, m::AbstractMethod, ops, nodes::Vector{I
     return pM
 end
 
-function upward_pass!(state::FMMState{S}, f::FMM) where {S}
+function upward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
     tree = f.tree
     m = f.method
     L = nlevels(tree)
     Nm = multipole_length(m)
-    nc = 1 << 2
+    nc = 1 << D
     Mp = state.multipoles
     fill!(Mp, zero(S))
     pml = partial_multipole_length(m)
@@ -118,7 +120,7 @@ function upward_pass!(state::FMMState{S}, f::FMM) where {S}
             ng = length(cr) ÷ nc
             B = reshape(view(Mp, :, cr), nc * Nm, ng)
             tmp = view(state.work1, 1:pml, 1:ng)
-            mul!(tmp, ops.M2M, B)
+            mul!(tmp, ops.M2M, B, eltype(ops.M2M)(ops.m2m_scale), false)
             gp = tree.group_parent[l+1]
             off = first(lr) - 1
             @inbounds for g in 1:ng
@@ -133,13 +135,13 @@ function upward_pass!(state::FMMState{S}, f::FMM) where {S}
     return state
 end
 
-function downward_pass!(state::FMMState{S}, f::FMM) where {S}
+function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
     tree = f.tree
     m = f.method
     L = nlevels(tree)
     Nm = multipole_length(m)
     Nl = local_length(m)
-    nc = 1 << 2
+    nc = 1 << D
     Mp = state.multipoles
     Lc = state.locals
     fill!(Lc, zero(S))
@@ -160,7 +162,8 @@ function downward_pass!(state::FMMState{S}, f::FMM) where {S}
                     G[k, g] = Lc[k, p]
                 end
             end
-            mul!(reshape(pL, nc * pll, ng), f.ops[l-1].L2L, G)
+            pops = f.ops[l-1]
+            mul!(reshape(pL, nc * pll, ng), pops.L2L, G, eltype(pops.L2L)(pops.l2l_scale), false)
         else
             fill!(pL, zero(S))
         end
@@ -179,7 +182,7 @@ function downward_pass!(state::FMMState{S}, f::FMM) where {S}
                     G[k, q] = Mp[k, s]
                 end
             end
-            apply!(R, ops.M2L[fidx], G)
+            apply!(R, ops.M2L[fidx], G, ops.m2l_scale)
             @inbounds for (q, idx) in enumerate(pr)
                 t = il.tgt[idx] - off
                 for k in 1:pll
@@ -198,9 +201,9 @@ end
 Form all multipole and local expansions for the sources (in the order the tree was
 built from, any eltype) and densities `τ`.
 """
-function build_expansions!(state::FMMState, f::FMM, sources, τ::AbstractVector)
+function build_expansions!(state::FMMState, f::FMM{D}, sources, τ::AbstractVector) where {D}
     tree = f.tree
-    pts = as_svectors(Val(2), sources)
+    pts = as_svectors(Val(D), sources)
     N = npoints(tree)
     length(pts) == N || throw(DimensionMismatch("expected $N sources"))
     length(τ) == N || throw(DimensionMismatch("expected $N densities"))
@@ -222,8 +225,8 @@ end
 Allocating version of `build_expansions!`; the expansion eltype is promoted from the
 operators, the kernel's output on the source eltype, and `eltype(τ)`.
 """
-function build_expansions(f::FMM, sources, τ::AbstractVector)
-    pts = as_svectors(Val(2), sources)
+function build_expansions(f::FMM{D}, sources, τ::AbstractVector) where {D}
+    pts = as_svectors(Val(D), sources)
     Tp = eltype(eltype(pts))
     Tτ = eltype(τ)
     S = expansion_eltype(f.method, Tp, Tτ)

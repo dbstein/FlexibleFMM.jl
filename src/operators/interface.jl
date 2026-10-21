@@ -23,26 +23,49 @@ abstract type AbstractMethod end
     M2LOperator{T}
 
 A same-width translation operator. Dense for now; a compressed form only needs to
-provide `apply!`.
+provide `apply!(out, op, x, α)`, computing `out = α·op·x`.
 """
 struct M2LOperator{T}
     A::Matrix{T}
 end
-@inline apply!(out::AbstractVecOrMat, op::M2LOperator, x::AbstractVecOrMat) = mul!(out, op.A, x)
+@inline apply!(out::AbstractVecOrMat, op::M2LOperator{T}, x::AbstractVecOrMat, α=true) where {T} =
+    mul!(out, op.A, x, T(α), false)
 Base.size(op::M2LOperator) = size(op.A)
 
 """
-    LevelOperators{T,X}
+    LevelOperators{T,R,X}
 
-The translation operators of one box width, with method-specific extras `X`.
+The translation operators of one box width, with method-specific extras `X`. The
+matrices may be shared with other widths (homogeneous kernels); the per-width
+factors `m2m_scale`, `l2l_scale`, `m2l_scale` are applied when they are used.
 """
-struct LevelOperators{T,X}
-    width::Float64
+struct LevelOperators{T,R<:Real,X}
+    width::R
     M2M::Matrix{T}
     L2L::Matrix{T}
     M2L::Vector{M2LOperator{T}}
+    m2m_scale::R
+    l2l_scale::R
+    m2l_scale::R
     extra::X
 end
+LevelOperators(width::R, M2M::Matrix{T}, L2L::Matrix{T}, M2L::Vector{M2LOperator{T}}, extra::X) where {T,R,X} =
+    LevelOperators{T,R,X}(width, M2M, L2L, M2L, one(R), one(R), one(R), extra)
+
+"""
+    rescale(ops, m, w) -> LevelOperators
+
+Operators for width `w` sharing the matrices of `ops` (built for a homogeneous
+kernel at another width): scaled surfaces or nodes and per-width scalar factors.
+"""
+function rescale end
+
+"""
+    dimension(m)
+
+Spatial dimension the method's operators are built for.
+"""
+function dimension end
 
 """
     supports_density(m, T), supports_output(m, out)
@@ -87,7 +110,8 @@ eltype `Tτ`: the operator eltype promoted with the kernel's output on such posi
 """
 function expansion_eltype(m::AbstractMethod, ::Type{Tpos}, ::Type{Tτ}) where {Tpos,Tτ}
     K = near_kernel(m)
+    D = dimension(m)
     return promote_type(operator_eltype(m),
-                        eltype(kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)})),
+                        eltype(kernel_eltype(K, SVector{D,Tpos}, SVector{D,floattype(K)})),
                         density_scalar(Tτ))
 end
