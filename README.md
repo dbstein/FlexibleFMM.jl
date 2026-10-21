@@ -65,7 +65,7 @@ rounding floor `~1e-14` near 64) and global relative errors one to two orders
 smaller (10 digits at 32 points on uniform data); see `docs/kifmm.md`, also for the
 two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz resonances
 at `k·w ≈ 3.40, 5.42, …`) and for timings against FMM2D/FMM3D (2D: 1.5–2× faster
-than FMM2D; 3D: FMM3D 2–3× faster than our cube method for Laplace and Stokes). The
+than FMM2D; 3D: level with FMM3D for Laplace and Helmholtz, 25% behind for Stokes). The
 black-box method converges geometrically in `p`. In
 3D the cube method at `p = 8` has a worst-case translation error of `1e-6` for
 Laplace (global errors about `1e-7`) and `3e-6`, `4e-5`, `1e-3` for stokeslets,

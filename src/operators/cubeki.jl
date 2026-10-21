@@ -87,9 +87,10 @@ function m2l_level!(pL::AbstractMatrix, m::CubeKernelIndependent{D}, ops::LevelO
     np = _nparts(S)
     R = _basereal(S)
     nl = size(pL, 2)
-    key = (:spectral, R, D, ops.extra.p, nc * np, nl)
+    rp = _real_parts(S) && operator_eltype(m) <: Real       # real-input transforms
+    key = (:spectral, R, D, ops.extra.p, nc * np, nl, rp)
     ws = get!(state.scratch, key) do
-        SpectralWorkspace(R, Val(D), ops.extra.p, nc * np, nl)
+        SpectralWorkspace(R, Val(D), ops.extra.p, nc * np, nl, Val(rp))
     end::SpectralWorkspace{R,D}
-    return spectral_m2l_level!(pL, ops, Mp, il, off, ws, ops.m2l_scale, N, nc)
+    return spectral_m2l_level!(pL, ops, Mp, il, off, ws, ops.m2l_scale, N, nc, symmetric_kernel(m.kernel))
 end

@@ -286,6 +286,16 @@ or Bessel functions; `Laplace3D` and `Stokeslet3D` have degree -1).
 homogeneity(K) = nothing
 
 """
+    symmetric_kernel(K)
+
+Whether a matrix-valued kernel has `K(s, t)[a, b] == K(s, t)[b, a]` (the Stokeslet),
+which lets the spectral translation share the tables of the component pairs.
+"""
+symmetric_kernel(K) = false
+symmetric_kernel(::Stokeslet2D) = true
+symmetric_kernel(::Stokeslet3D) = true
+
+"""
     kernel_matrix(K, sources, targets) -> Matrix
 
 `A[j, i] = K(sources[i], targets[j])`: rows are targets, columns are sources. For an

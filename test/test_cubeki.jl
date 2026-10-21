@@ -167,7 +167,7 @@ end
     pts = uniform_points(rng, 4000)
     τ = randn(rng, 4000)
     f = FMM(m, pts; ppl=30, bbox=(P2(0, 0), 1.0))
-    @test all(f.ops[l].M2L[3].tables[1] === f.ops[1].M2L[3].tables[1] for l in 2:nlevels(f))
+    @test all(f.ops[l].M2L[3].tr[1] === f.ops[1].M2L[3].tr[1] for l in 2:nlevels(f))
     st = build_expansions(f, pts, τ)
     targets = uniform_points(rng, 1000)
     @test max_relative_diff(evaluate(f, st, targets), direct(HomogeneousDipole2D(), pts, τ, targets)) < 1e-7

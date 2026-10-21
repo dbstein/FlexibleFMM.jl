@@ -138,18 +138,22 @@ number of columns per box), threads own disjoint blocks, and within a block the
 pairs are walked target by target with the targets in Morton order of their cells
 (`InteractionList.torder`), so that a target's block stays in cache across its
 pairs and neighbouring targets reuse their sources; the component products of a
-vector kernel are fused into one pass per block. Walking the pairs offset by
-offset instead, which is what the dense path wants, streams every block once per
-pair and is bandwidth bound: it was 2.4× slower for Laplace in 3D. The stage runs
-at about 70 GFlop/s for Laplace and 50 for Stokes on 12 Apple cores (10 and 6 on
-one), and the Stokes translation is the 3D hot spot: 100 000 uniform points take
-0.5 s for the Laplace matvec and 4.5 s for Stokes at `p = 8`, almost all of it in
-the `nc² = 9` products per pair. The planned reductions are the symmetry of the
-Stokeslet tables (6 distinct products instead of 9), real-input transforms (a real
-kernel's spectrum is Hermitian, halving the frequencies) and fewer table streams
-per iteration. In 2D the spectral path does not pay: at 10⁶ uniform Laplace points
-the translations take about 4× longer than the dense circle operators (0.67 s
-against 0.17 s); the 2D implementation exists to be tested, not to be fast.
+vector kernel are fused into one pass per block, with the values of every stream
+loaded before the stores so that a symmetric kernel (`symmetric_kernel`, the
+Stokeslet) loads each of its 6 distinct tables once instead of 9. Walking the
+pairs offset by offset instead, which is what the dense path wants, streams every
+block once per pair and is bandwidth bound: it was 2.4× slower for Laplace in 3D.
+Real expansions of a real kernel use real-input transforms: their spectra are
+Hermitian, so only `(p+1)(2p)²` of the `(2p)³` frequencies are stored and
+multiplied (0.56× the work and memory); complex kernels or densities take the
+full complex transforms. Together with the table symmetry this halved the Stokes
+translation. At `p = 8` and 200 points per leaf, 100 000 uniform points take
+0.31 s for the Laplace matvec (0.21 s in the translations) and 1.4 s for Stokes
+(1.1 s), the latter still the 3D hot spot; the Stokes Hadamard pass is load
+bound (12 table and 6 source values per entry for 36 multiply-adds). In 2D the
+spectral path does not pay: at 10⁶ uniform Laplace points the translations take
+about twice as long as the dense circle operators (0.38 s against 0.17 s); the 2D
+implementation exists to be tested, not to be fast.
 
 ## Against the Flatiron libraries
 
@@ -164,15 +168,15 @@ excluded, 0.01–0.15 s), theirs the one-shot call including their tree build.
 | 2D Laplace, 10⁶ | circles 30: 0.25 s, 2e-8; circles 60: 0.40 s, 8e-14 | 0.66 s, 2e-9 (eps 1e-6); 0.66 s, 2e-13 (1e-9) |
 | 2D Helmholtz k = 10, 10⁶ | circles 60: 1.46 s, 1e-13 | 1.43 s, 5e-9 (1e-6); 1.69 s, 3e-12 (1e-9) |
 | 2D Stokes, 10⁶ | circles 60: 0.76 s, 1e-11 | 1.28 s, 2e-8 (1e-6); 1.34 s, 4e-12 (1e-9) |
-| 3D Laplace, 10⁵ | cube 6: 0.27 s, 2e-6; cube 8: 0.45 s, 3e-8; cube 10: 0.73 s, 6e-10 | 0.10 s, 7e-5 (1e-3); 0.36 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
-| 3D Helmholtz k = 3, 10⁵ | cube 8: 1.03 s, 3e-8 | 0.77 s, 2e-7 (1e-6); 0.82 s, 2e-11 (1e-9) |
-| 3D stokeslets, 10⁵ | cube 6: 1.2 s, 2e-5; cube 8: 2.6 s, 4e-7 | 0.26 s, 5e-4 (1e-3); 1.15 s, 2e-6 (1e-6) |
-| 3D stresslets, 10⁵ | cube 8: 2.5 s, 1e-7 | 1.3 s, 5e-7 (1e-6) |
+| 3D Laplace, 10⁵ | cube 8: 0.31 s, 3e-8 (0.45 s before the fold and the real transforms) | 0.10 s, 7e-5 (1e-3); 0.36 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
+| 3D Helmholtz k = 3, 10⁵ | cube 8: 0.80 s, 3e-8 | 0.77 s, 2e-7 (1e-6); 0.82 s, 2e-11 (1e-9) |
+| 3D stokeslets, 10⁵ | cube 8: 1.4 s, 4e-7 (2.6 s before) | 0.26 s, 5e-4 (1e-3); 1.15 s, 2e-6 (1e-6) |
+| 3D stresslets, 10⁵ | cube 8: 2.5 s, 1e-7 (before) | 1.3 s, 5e-7 (1e-6) |
 
 In 2D the circle method is 1.5–2× faster than FMM2D at equal or better accuracy. In
-3D FMM3D is 2–3× faster for Laplace and Stokes at comparable accuracy and about
-even for Helmholtz; the gap is the Stokes translation cost discussed above and the
-dense M2M/L2L of the finer large surface.
+3D, after folding the pseudo-inverses and the real-input transforms, the cube
+method is level with FMM3D for Laplace and Helmholtz and about 25% slower for
+Stokes at comparable accuracy; the 3D rows above are at 200 points per leaf.
 
 Points per leaf matter more in 3D than in 2D, because every box carries
 `nlarge · nc` check values and its share of the translations while a surface
@@ -207,11 +211,13 @@ does for Laplace dipoles (`1e-4` at `p = 8`); stresslets and doublets ask more o
 the equivalent density than charges do.
 
 Memory in 3D. The spectral path keeps the transformed multipoles and the
-accumulated check data of a level in arrays of `(2p)³` complex numbers per box and
-component (per real/complex part for dual or complex expansions): `128 KB` per box
-for Laplace at `p = 8`, three times that for Stokes, about `600 MB` for `10⁵`
-uniform points and `6 GB` for `10⁶`. Real-input transforms (halving the frequencies
-of a real kernel), single precision for the transforms, and processing the target
-boxes of a level in chunks are the planned mitigations. The dense operators of a
-level are `nlarge·nc × 2³·(nsurface·nc + 1)` for M2M and its transpose shape for
-L2L, `230 MB` each for Stokes at `p = 8`, built once for a homogeneous kernel.
+accumulated check data of a level in arrays of `(p+1)(2p)²` complex numbers per
+box and component for real expansions of a real kernel (`(2p)³` otherwise; per
+real/complex part for dual or complex expansions): `72 KB` per box for Laplace at
+`p = 8`, three times that for Stokes, about `340 MB` for `10⁵` uniform points and
+`3.4 GB` for `10⁶`. Single precision for the transforms and processing the target
+boxes of a level in chunks are the remaining mitigations. The folded M2M and L2L
+are `(nsurface·nc + 1) × 2³·(nsurface·nc + 1)` and its transpose shape, `50 MB`
+each for Stokes at `p = 8`, built once for a homogeneous kernel; the tables of the
+316 offsets are `290 MB` for Stokes (full and half spectra, real and imaginary
+parts).
