@@ -64,15 +64,16 @@ struct FMMState{S,P<:SVector,Tτ}
 end
 
 function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,Tp,Tτ}
-    Nexp = expansion_length(f)
+    m = f.method
+    rows = max(multipole_length(m), local_length(m), partial_multipole_length(m), partial_local_length(m))
     tree = f.tree
     n = nnodes(tree)
     N = npoints(tree)
     nc = maximum(length, tree.level_range)
-    return FMMState{S,SVector{D,Tp},Tτ}(zeros(S, Nexp, n), zeros(S, Nexp, n),
+    return FMMState{S,SVector{D,Tp},Tτ}(zeros(S, multipole_length(m), n), zeros(S, local_length(m), n),
                                        Vector{SVector{D,Tp}}(undef, N), Vector{Tτ}(undef, N),
-                                       Matrix{S}(undef, Nexp, nc), Matrix{S}(undef, Nexp, nc),
-                                       Matrix{S}(undef, Nexp, nc))
+                                       Matrix{S}(undef, rows, nc), Matrix{S}(undef, rows, nc),
+                                       Matrix{S}(undef, rows, nc))
 end
 
 # contiguous chunks of 1:n for threading
@@ -100,28 +101,29 @@ function upward_pass!(state::FMMState{S}, f::FMM) where {S}
     tree = f.tree
     m = f.method
     L = nlevels(tree)
-    Nexp = expansion_length(m)
+    Nm = multipole_length(m)
     nc = 1 << 2
     Mp = state.multipoles
     fill!(Mp, zero(S))
+    pml = partial_multipole_length(m)
     for l in L:-1:3
         lr = tree.level_range[l]
         nl = length(lr)
         ops = f.ops[l]
-        pM = view(state.partial, :, 1:nl)
+        pM = view(state.partial, 1:pml, 1:nl)
         fill!(pM, zero(S))
         _s2m_level!(pM, m, ops, f.s2m_nodes[l], first(lr), tree, state.sources, state.τ)
         if l < L
             cr = tree.level_range[l+1]
             ng = length(cr) ÷ nc
-            B = reshape(view(Mp, :, cr), nc * Nexp, ng)
-            tmp = view(state.work1, :, 1:ng)
+            B = reshape(view(Mp, :, cr), nc * Nm, ng)
+            tmp = view(state.work1, 1:pml, 1:ng)
             mul!(tmp, ops.M2M, B)
             gp = tree.group_parent[l+1]
             off = first(lr) - 1
             @inbounds for g in 1:ng
                 p = gp[g] - off
-                for k in 1:Nexp
+                for k in 1:pml
                     pM[k, p] = tmp[k, g]
                 end
             end
@@ -135,28 +137,30 @@ function downward_pass!(state::FMMState{S}, f::FMM) where {S}
     tree = f.tree
     m = f.method
     L = nlevels(tree)
-    Nexp = expansion_length(m)
+    Nm = multipole_length(m)
+    Nl = local_length(m)
     nc = 1 << 2
     Mp = state.multipoles
     Lc = state.locals
     fill!(Lc, zero(S))
+    pll = partial_local_length(m)
     for l in 3:L
         lr = tree.level_range[l]
         nl = length(lr)
         ops = f.ops[l]
-        pL = view(state.partial, :, 1:nl)
+        pL = view(state.partial, 1:pll, 1:nl)
         if l > 3
             # L2L: parents on level l-1 to the whole level block, in group order
             ng = nl ÷ nc
             gp = tree.group_parent[l]
-            G = view(state.work1, :, 1:ng)
+            G = view(state.work1, 1:Nl, 1:ng)
             @inbounds for g in 1:ng
                 p = gp[g]
-                for k in 1:Nexp
+                for k in 1:Nl
                     G[k, g] = Lc[k, p]
                 end
             end
-            mul!(reshape(pL, nc * Nexp, ng), f.ops[l-1].L2L, G)
+            mul!(reshape(pL, nc * pll, ng), f.ops[l-1].L2L, G)
         else
             fill!(pL, zero(S))
         end
@@ -167,18 +171,18 @@ function downward_pass!(state::FMMState{S}, f::FMM) where {S}
             pr = pair_range(il, fidx)
             n = length(pr)
             n == 0 && continue
-            G = view(state.work1, :, 1:n)
-            R = view(state.work2, :, 1:n)
+            G = view(state.work1, 1:Nm, 1:n)
+            R = view(state.work2, 1:pll, 1:n)
             @inbounds for (q, idx) in enumerate(pr)
                 s = il.src[idx]
-                for k in 1:Nexp
+                for k in 1:Nm
                     G[k, q] = Mp[k, s]
                 end
             end
             apply!(R, ops.M2L[fidx], G)
             @inbounds for (q, idx) in enumerate(pr)
                 t = il.tgt[idx] - off
-                for k in 1:Nexp
+                for k in 1:pll
                     pL[k, t] += R[k, q]
                 end
             end
@@ -200,6 +204,8 @@ function build_expansions!(state::FMMState, f::FMM, sources, τ::AbstractVector)
     N = npoints(tree)
     length(pts) == N || throw(DimensionMismatch("expected $N sources"))
     length(τ) == N || throw(DimensionMismatch("expected $N densities"))
+    supports_density(f.method, eltype(τ)) ||
+        throw(ArgumentError("densities of type $(eltype(τ)) are not supported by $(typeof(f.method).name.name)"))
     perm = tree.perm
     @inbounds for j in 1:N
         state.sources[j] = pts[perm[j]]

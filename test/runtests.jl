@@ -54,4 +54,7 @@ include("operator_checks.jl")
     @testset "sources and targets" begin
         include("test_sources.jl")
     end
+    @testset "Stokes" begin
+        include("test_stokes.jl")
+    end
 end

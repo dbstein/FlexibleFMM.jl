@@ -36,6 +36,11 @@ densities sums its parts. `evaluate(f, st, targets; output=Gradient())` returns
 `∇u` as `SVector`s. Dual-number positions, densities and targets go through
 unchanged (directional and shape derivatives).
 
+Stokes: `Stokeslet2D()` with stokeslet (`SVector`), `Stresslet(f, ν)`, `Doublet(g)` and
+`Rotlet(ω)` densities, velocity, pressure and velocity-gradient outputs, and a plan
+API in the shape of JellySim's kernel backends (`StokesFMMPlan`, `stokes_fmm_eval!`,
+`StokesFMMKernel`); see `docs/stokes.md`.
+
 Kernels are callables `K(source, target)` on `SVector{2}`s; `Laplace2D()`,
 `Helmholtz2D(k)` and `Yukawa2D(k)` are provided and any translation-invariant
 function of the same shape works. `build_expansions!` reuses a state for new

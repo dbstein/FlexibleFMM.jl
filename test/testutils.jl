@@ -6,6 +6,7 @@ const P2 = SVector{2,Float64}
 
 max_relative_diff(a, b) = maximum(abs.(a .- b)) / maximum(abs.(b))
 max_abs_diff(a, b) = maximum(abs.(a .- b))
+mrd(a, b) = maximum(norm.(a .- b)) / maximum(norm.(b))     # scalars, SVectors or SMatrices
 
 # Point distributions in (or near) the unit square; all return Vector{P2}.
 uniform_points(rng, N) = [P2(rand(rng), rand(rng)) for _ in 1:N]

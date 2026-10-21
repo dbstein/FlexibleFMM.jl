@@ -47,7 +47,13 @@ end
 `out[j]` = `output` at `targets[j]` (a vector of `SVector{2}` or a `2 × N` matrix).
 Targets must lie in the root box.
 """
+function _check_output(f::FMM, output)
+    supports_output(f.method, output) ||
+        throw(ArgumentError("output $(typeof(output)) is not available with $(typeof(f.method).name.name)"))
+end
+
 function evaluate!(out::AbstractVector, f::FMM, state::FMMState, targets; output=Potential())
+    _check_output(f, output)
     ts = as_svectors(Val(2), targets)
     nt = length(ts)
     length(out) == nt || throw(DimensionMismatch("out and targets differ in length"))
@@ -75,6 +81,7 @@ end
 `out[i]` = `output` at source `i` (original order) from all other sources.
 """
 function evaluate_at_sources!(out::AbstractVector, f::FMM, state::FMMState; output=Potential())
+    _check_output(f, output)
     tree = f.tree
     N = npoints(tree)
     length(out) == N || throw(DimensionMismatch("expected $N outputs"))

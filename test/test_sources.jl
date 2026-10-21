@@ -7,7 +7,6 @@ using FlexibleFMM: density_scalar, chebyshev_values, chebyshev_values_derivative
     s2m!, l2t, expansion_length, operator_eltype, center
 
 rng = MersenneTwister(14)
-mrd(a, b) = maximum(norm.(a .- b)) / maximum(norm.(b))     # scalars or SVectors
 const SDual = ForwardDiff.Dual{:src,Float64,1}
 sdual(x, v) = SDual(x, ForwardDiff.Partials((v,)))
 spartial(x) = ForwardDiff.partials(x, 1)

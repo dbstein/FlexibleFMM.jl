@@ -44,7 +44,33 @@ struct LevelOperators{T,X}
     extra::X
 end
 
+"""
+    supports_density(m, T), supports_output(m, out)
+
+Whether a method can form expansions from densities of type `T` and evaluate the
+output `out`; checked before the threaded passes so that unsupported combinations
+raise a plain `ArgumentError`.
+"""
+supports_density(m::AbstractMethod, ::Type) = true
+supports_density(m::AbstractMethod, ::Type{T}) where {T<:Tuple} = all(S -> supports_density(m, S), fieldtypes(T))
+supports_output(m::AbstractMethod, out) = true
+
 function expansion_length end
+"""
+    multipole_length(m), local_length(m)
+    partial_multipole_length(m), partial_local_length(m)
+
+Lengths of the multipole and local expansions and of the partial expansions (the
+accumulated check data before the method's transform). All equal
+`expansion_length(m)` unless a method augments one of them, as the kernel-independent
+Stokes method does: its multipoles carry a point-source strength (the single-layer
+density cannot represent the net flux of stresslet sources) and its downward check
+data carry the pressure at the box center.
+"""
+multipole_length(m::AbstractMethod) = expansion_length(m)
+local_length(m::AbstractMethod) = expansion_length(m)
+partial_multipole_length(m::AbstractMethod) = expansion_length(m)
+partial_local_length(m::AbstractMethod) = expansion_length(m)
 function operator_eltype end
 function level_operators end
 function s2m! end
@@ -62,6 +88,6 @@ eltype `Tτ`: the operator eltype promoted with the kernel's output on such posi
 function expansion_eltype(m::AbstractMethod, ::Type{Tpos}, ::Type{Tτ}) where {Tpos,Tτ}
     K = near_kernel(m)
     return promote_type(operator_eltype(m),
-                        kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)}),
+                        eltype(kernel_eltype(K, SVector{2,Tpos}, SVector{2,floattype(K)})),
                         density_scalar(Tτ))
 end

@@ -29,13 +29,56 @@ Base.:+(a::Dipole, b::Dipole) = Dipole(a.d + b.d)
 Base.:*(a::Number, b::Dipole) = Dipole(a * b.d)
 
 """
-    Potential()
+    Potential()  (alias `Velocity()`)
     Gradient()
+    Pressure()
 
-Output types: the potential `u`, or its gradient `∇u` as an `SVector`.
+Output types: the potential (velocity, for a Stokes kernel), its gradient (an
+`SVector` for scalar kernels, the velocity-gradient `SMatrix` for Stokes), or the
+pressure (Stokes only).
 """
 struct Potential end
 struct Gradient end
+struct Pressure end
+const Velocity = Potential
+
+# ---- Stokes singularities (2D formulas; d = t - s, r = |d|, c = 1/4π) ----
+#   stokeslet   f (a plain SVector):   u = c(-log r·f + d(d·f)/r²),         p = 2c(d·f)/r²
+#   Stresslet(f, ν):  u = -(1/π) d (d·f)(d·ν)/r⁴,  p = (1/π)[(f·ν)/r² - 2(d·f)(d·ν)/r⁴]
+#   Doublet(g):  u = c(g/r² - 2d(d·g)/r⁴) = ½∇²G·g (potential dipole), p = 0
+#   Rotlet(ω):   u = 2cω(-d₂, d₁)/r² = -ω ε_{jk}∂_{s_k}G_{ij},            p = 0
+# The stresslet and doublet are the 2D analogues of JellySim's -3/(4π) and 1/(8π)
+# kernels; μ is carried by the densities.
+
+"""
+    Stresslet(f, ν)
+
+A Stokes stresslet (double-layer source) with strength `f` and direction `ν`.
+"""
+struct Stresslet{D,T<:Number}
+    f::SVector{D,T}
+    ν::SVector{D,T}
+end
+Stresslet(f::SVector{D}, ν::SVector{D}) where {D} = (T = promote_type(eltype(f), eltype(ν)); Stresslet{D,T}(f, ν))
+
+"""
+    Doublet(g)
+
+A potential dipole (source doublet) with moment `g`, the `O(ε²)` term of slender
+body theory.
+"""
+struct Doublet{D,T<:Number}
+    g::SVector{D,T}
+end
+
+"""
+    Rotlet(ω)
+
+A point torque `ω` (2D: a scalar).
+"""
+struct Rotlet{T<:Number}
+    ω::T
+end
 
 """
     density_scalar(T)
@@ -44,6 +87,10 @@ The scalar type a density of type `T` carries (the eltype of its expansions).
 """
 density_scalar(::Type{T}) where {T<:Number} = T
 density_scalar(::Type{Dipole{D,T}}) where {D,T} = T
+density_scalar(::Type{SVector{D,T}}) where {D,T} = T
+density_scalar(::Type{Stresslet{D,T}}) where {D,T} = T
+density_scalar(::Type{Doublet{D,T}}) where {D,T} = T
+density_scalar(::Type{Rotlet{T}}) where {T} = T
 density_scalar(::Type{T}) where {T<:Tuple} = promote_type(map(density_scalar, fieldtypes(T))...)
 
 # ---- kernel derivatives: generic fallbacks by ForwardDiff on the kernel ----
@@ -106,3 +153,49 @@ Field at `t` of the source at `s` with density `τ`: `K(s,t)·τ` for a charge,
 @inline target_field(K, s::SVector, t::SVector, τ::Tuple, out::Gradient) = _sum_targets(K, s, t, out, τ...)
 @inline _sum_targets(K, s, t, out, a) = target_field(K, s, t, a, out)
 @inline _sum_targets(K, s, t, out, a, rest...) = target_field(K, s, t, a, out) + _sum_targets(K, s, t, out, rest...)
+
+# ---- Stokes fields ----
+
+@inline source_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, f::SVector{2}) = K(s, t) * f
+@inline function source_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Stresslet{2})
+    d = t - s
+    r2 = _sqnorm(d)
+    return (-(4 * K.c) * sum(d .* τ.f) * sum(d .* τ.ν) / (r2 * r2)) * d
+end
+@inline function source_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Doublet{2})
+    d = t - s
+    r2 = _sqnorm(d)
+    g = τ.g
+    return (K.c / r2) * (g - (2 * sum(d .* g) / r2) * d)
+end
+@inline function source_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Rotlet)
+    d = t - s
+    return (2 * K.c * τ.ω / _sqnorm(d)) * SVector(-d[2], d[1])
+end
+
+@inline target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, f::SVector{2}, ::Pressure) =
+    sum(pressure_kernel(K, s, t) .* f)
+@inline function target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Stresslet{2}, ::Pressure)
+    d = t - s
+    r2 = _sqnorm(d)
+    return (4 * K.c) * (sum(τ.f .* τ.ν) / r2 - 2 * sum(d .* τ.f) * sum(d .* τ.ν) / (r2 * r2))
+end
+@inline target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Doublet{2}, ::Pressure) =
+    zero(promote_type(eltype(s), eltype(t), density_scalar(typeof(τ)), typeof(K.c)))
+@inline target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Rotlet, ::Pressure) =
+    zero(promote_type(eltype(s), eltype(t), density_scalar(typeof(τ)), typeof(K.c)))
+@inline target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Tuple, out::Pressure) =
+    _sum_targets(K, s, t, out, τ...)
+
+# velocity gradient ∂u_a/∂t_j: hand-written for the stokeslet, ForwardDiff otherwise
+@inline function target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, f::SVector{2}, ::Gradient)
+    d = t - s
+    r2 = _sqnorm(d)
+    df = sum(d .* f)
+    b = K.c / r2
+    I2 = one(SMatrix{2,2,typeof(b)})
+    return b * (df * I2 + d * transpose(f) - f * transpose(d)) - (2b * df / r2) * (d * transpose(d))
+end
+@inline function target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Union{Stresslet{2},Doublet{2},Rotlet}, ::Gradient)
+    return ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)
+end

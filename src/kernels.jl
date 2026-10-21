@@ -135,24 +135,85 @@ floattype(::LaplaceDipoleTest{T}) where {T} = T
 end
 
 """
+    Stokeslet2D(T=Float64)
+
+The 2D Stokeslet `(1/4π)(-log r·I + r̂r̂ᵀ)`, an `SMatrix{2,2}`, so that `K(s,t)·f` is
+the velocity at `t` of a point force `f` at `s` with unit viscosity (as in JellySim,
+μ is carried by the density convention). The pressure of that flow is
+`pressure_kernel(K, s, t)·f = (r̂·f)/(2π r)`. See docs/stokes.md for the other
+singularities (`Stresslet`, `Doublet`, `Rotlet`) built on this kernel.
+"""
+struct Stokeslet2D{T<:AbstractFloat} <: AbstractKernel
+    c::T       # 1/(4π)
+end
+Stokeslet2D(::Type{T}=Float64) where {T<:AbstractFloat} = Stokeslet2D{T}(1 / (4 * T(π)))
+floattype(::Stokeslet2D{T}) where {T} = T
+@inline function (K::Stokeslet2D)(s::SVector{2}, t::SVector{2})
+    d = t - s
+    r2 = _sqnorm(d)
+    a = -K.c * log(r2) / 2
+    b = K.c / r2
+    return SMatrix{2,2}(a + b * d[1] * d[1], b * d[2] * d[1], b * d[1] * d[2], a + b * d[2] * d[2])
+end
+"""
+    pressure_kernel(K::Stokeslet2D, s, t) -> SVector{2}
+
+`p = pressure_kernel(K, s, t)·f` is the pressure at `t` of a point force `f` at `s`.
+"""
+@inline function pressure_kernel(K::Stokeslet2D, s::SVector{2}, t::SVector{2})
+    d = t - s
+    return (2 * K.c / _sqnorm(d)) * d
+end
+
+"""
     kernel_eltype(K, S, T)
 
-Type returned by `K(::S, ::T)`.
+Type returned by `K(::S, ::T)`: a number, or an `SMatrix` for vector kernels.
 """
 kernel_eltype(K, ::Type{S}, ::Type{T}) where {S,T} = Base.promote_op(K, S, T)
 
 """
+    ncomp(K)
+
+Number of components of the fields of `K`: 1 for a scalar kernel, `m` for an
+`SMatrix{m,n}`-valued one.
+"""
+ncomp(K) = _ncomp(kernel_eltype(K, SVector{2,floattype(K)}, SVector{2,floattype(K)}))
+_ncomp(::Type{<:Number}) = 1
+_ncomp(::Type{<:SMatrix{m}}) where {m} = m
+
+"""
     kernel_matrix(K, sources, targets) -> Matrix
 
-`A[j, i] = K(sources[i], targets[j])`: rows are targets, columns are sources.
+`A[j, i] = K(sources[i], targets[j])`: rows are targets, columns are sources. For an
+`SMatrix{m,n}`-valued kernel the matrix is `m·nt × n·ns`, component major:
+`A[(a-1)nt + j, (b-1)ns + i] = K(sources[i], targets[j])[a, b]`, so a density vector
+stores all first components, then all second components, and so on.
 """
 function kernel_matrix(K, sources::AbstractVector, targets::AbstractVector)
     S = kernel_eltype(K, eltype(sources), eltype(targets))
+    return _kernel_matrix(S, K, sources, targets)
+end
+function _kernel_matrix(::Type{S}, K, sources, targets) where {S<:Number}
     A = Matrix{S}(undef, length(targets), length(sources))
     for i in eachindex(sources)
         s = sources[i]
         for j in eachindex(targets)
             A[j, i] = K(s, targets[j])
+        end
+    end
+    return A
+end
+function _kernel_matrix(::Type{S}, K, sources, targets) where {m,n,S<:SMatrix{m,n}}
+    ns, nt = length(sources), length(targets)
+    A = Matrix{eltype(S)}(undef, m * nt, n * ns)
+    for i in eachindex(sources)
+        s = sources[i]
+        for j in eachindex(targets)
+            k = K(s, targets[j])
+            for b in 1:n, a in 1:m
+                A[(a - 1) * nt + j, (b - 1) * ns + i] = k[a, b]
+            end
         end
     end
     return A

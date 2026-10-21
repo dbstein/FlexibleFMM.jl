@@ -53,6 +53,30 @@ end
 end
 
 """
+    chebyshev_values_derivatives2(::Val{P}, x) -> (T, T′, T″)
+
+Values, first and second derivatives of `T_0, …, T_{P-1}` at `x`
+(`T_n″ = 4T′_{n-1} + 2x T″_{n-1} - T″_{n-2}`).
+"""
+@inline function chebyshev_values_derivatives2(::Val{P}, x) where {P}
+    t = MVector{P,typeof(x)}(undef)
+    d = MVector{P,typeof(x)}(undef)
+    e = MVector{P,typeof(x)}(undef)
+    @inbounds begin
+        t[1] = one(x); d[1] = zero(x); e[1] = zero(x)
+        if P >= 2
+            t[2] = x; d[2] = one(x); e[2] = zero(x)
+        end
+        for n in 3:P
+            t[n] = 2x * t[n-1] - t[n-2]
+            d[n] = 2t[n-1] + 2x * d[n-1] - d[n-2]
+            e[n] = 4d[n-1] + 2x * e[n-1] - e[n-2]
+        end
+    end
+    return SVector(t), SVector(d), SVector(e)
+end
+
+"""
     chebyshev_vandermonde(x, p) -> Matrix
 
 `V[i, j+1] = T_j(x[i])` for `j = 0:p-1`.
