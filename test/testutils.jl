@@ -46,3 +46,31 @@ const DISTRIBUTIONS = (
     one_quadrant = one_quadrant_points,
     mixed = mixed_points,
 )
+
+# 3D distributions in (or near) the unit cube; all return Vector{P3}.
+const P3 = SVector{3,Float64}
+uniform_points3(rng, N) = [rand(rng, P3) for _ in 1:N]
+function clustered_points3(rng, N; nclusters=10, spread=0.01)
+    centers = [0.1 .+ 0.8 .* rand(rng, P3) for _ in 1:nclusters]
+    return [centers[1 + (i - 1) % nclusters] + spread * randn(rng, P3) for i in 1:N]
+end
+sphere_points(rng, N; center=P3(0.5, 0.5, 0.5), radius=0.4) = [center + radius * normalize(randn(rng, P3)) for _ in 1:N]
+# a curve (the fibre case): a jittered helix through the cube
+helix_points(rng, N) = [P3(0.5 + 0.3cos(θ), 0.5 + 0.3sin(θ), 0.05 + 0.9θ / (6π)) + 1e-3 * randn(rng, P3) for θ in 6π .* rand(rng, N)]
+one_octant_points(rng, N) = [0.3 * rand(rng, P3) for _ in 1:N]
+# sphere + a tight cluster + a sparse background: forces level restriction and ghosts
+function mixed_points3(rng, N)
+    ns = N ÷ 2
+    nk = N ÷ 4
+    s = sphere_points(rng, ns; radius=0.3)
+    k = [P3(0.9, 0.9, 0.9) + 0.002 * randn(rng, P3) for _ in 1:nk]
+    return vcat(s, k, uniform_points3(rng, N - ns - nk))
+end
+const DISTRIBUTIONS3 = (
+    uniform = uniform_points3,
+    clustered = clustered_points3,
+    sphere = sphere_points,
+    helix = helix_points,
+    one_octant = one_octant_points,
+    mixed = mixed_points3,
+)

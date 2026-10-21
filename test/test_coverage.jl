@@ -55,7 +55,8 @@ function check_coverage(tree)
     expected = Set((y, x) for y in 1:n if !tree.ghost[y] for x in vl[y] if tree.has_source[x])
     @test pairs == expected
     # offsets and levels are consistent with the CSR layout
-    far = far_offsets(Val(2))
+    D = length(eltype(tree.cell))
+    far = far_offsets(Val(D))
     for (l, il) in enumerate(tree.ilists)
         @test length(il.offset_ptr) == length(far) + 1
         for f in eachindex(far), q in pair_range(il, f)

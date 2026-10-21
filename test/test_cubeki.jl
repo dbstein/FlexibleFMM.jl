@@ -7,7 +7,7 @@
 using FlexibleFMM: CubeKernelIndependent, SquareKernelIndependent, cube_boundary_points, level_operators, far_offsets,
     multipole_length, local_length, partial_local_length, expansion_length, nlevels,
     _nparts, _cpart, _cassemble, SpectralM2L, apply!, conditioning, locate, evaluate_target,
-    s2m!, l2t, center, nsurface
+    s2m!, l2t, center, nsurface, nlarge
 
 rng = MersenneTwister(17)
 const DH2 = ForwardDiff.Dual{:square,Float64,2}
@@ -23,6 +23,9 @@ const DH2 = ForwardDiff.Dual{:square,Float64,2}
     end
     @test nsurface(SquareKernelIndependent(Laplace2D(); p=8)) == 28
     @test nsurface(CubeKernelIndependent{3}(Laplace2D(); p=6)) == 152
+    @test nlarge(SquareKernelIndependent(Laplace2D(); p=8)) == 60          # pc = 2p = 16
+    @test nlarge(CubeKernelIndependent{3}(Laplace2D(); p=6, pc=9)) == 9^3 - 7^3
+    @test_throws ArgumentError CubeKernelIndependent{2}(Laplace2D(); p=8, pc=6)
     @test_throws ArgumentError SquareKernelIndependent(Laplace2D(); p=1)
     @test_throws ArgumentError SquareKernelIndependent(Laplace2D(); d=1.5)
 end
@@ -78,7 +81,7 @@ end
     # Stokes is about 100× less accurate than Laplace at equal p (two components and the
     # log part), doublets another 10×: p = 16 (60 points) for 1e-6 on all of them
     m = SquareKernelIndependent(Stokeslet2D(); p=16, d=0.1)
-    @test multipole_length(m) == 121 && local_length(m) == 120 && partial_local_length(m) == 121
+    @test multipole_length(m) == 121 && local_length(m) == 2 * (4 * 32 - 4) && partial_local_length(m) == 121
     check_m2l_all_offsets(rng, m, 0.37, 1e-6)
     check_m2m(rng, m, 0.61, 1e-6)
     check_l2l(rng, m, 0.61, 1e-6)
@@ -204,7 +207,7 @@ end
         push!(rows, "p = $p ($N points): square d=0.05 $(round(eg[1], sigdigits=2)), d=0.1 $(round(eg[2], sigdigits=2)), d=0.2 $(round(eg[3], sigdigits=2)); circles $(round(ec, sigdigits=2))")
         @test eg[2] < 10 * ec + 1e-13     # the square is not much worse than the circle at equal point count
     end
-    @info "Laplace worst-case translation error, square surfaces vs circles\n" * join(rows, "\n")
+    @info "Laplace worst-case translation error, square surfaces (pc = 2p) vs circles\n" * join(rows, "\n")
     @test worst(SquareKernelIndependent(K; p=12, d=0.1)) < 2e-8
     @test worst(SquareKernelIndependent(K; p=12, d=0.05)) < 1e-8
 end

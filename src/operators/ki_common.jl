@@ -62,10 +62,11 @@ end
 """
     KIExtras{T,R,D}
 
-Surfaces (relative to the box center), the two pseudo-inverses, their shared-matrix
-scale factor, and, for square/cube surfaces, the lattice data the spectral translation
-needs (`p` points per edge, spacing `h` of the small surface, and the linear index
-of each small-surface point in the padded `(2p)^D` lattice).
+Surfaces (relative to the box center; the large one may carry more points than the
+small one), the two pseudo-inverses, their shared-matrix scale factor, and, for
+square/cube surfaces, the lattice data the spectral translation needs (`p` points per
+edge, spacing `h` of the small surface, and the linear index of each small-surface
+point in the padded `(2p)^D` lattice).
 """
 struct KIExtras{T,R,D}
     small::Vector{SVector{D,R}}
@@ -87,9 +88,15 @@ whether its multipoles carry a point-source strength. Both hold for Stokes kerne
 pins_pressure(K) = false
 has_flux_source(K) = false
 
+# `nsurface(m)` points on the small surface (upward equivalent, downward check) and
+# `nlarge(m)` on the large one (upward check, downward equivalent); the multipole is a
+# density on the small surface, the local a density on the large one.
+nlarge(m::AbstractKernelIndependent) = nsurface(m)
 expansion_length(m::AbstractKernelIndependent) = ncomp(m.kernel, Val(dimension(m))) * nsurface(m)
 multipole_length(m::AbstractKernelIndependent) = expansion_length(m) + (has_flux_source(m.kernel) ? 1 : 0)
 partial_local_length(m::AbstractKernelIndependent) = expansion_length(m) + (pins_pressure(m.kernel) ? 1 : 0)
+local_length(m::AbstractKernelIndependent) = ncomp(m.kernel, Val(dimension(m))) * nlarge(m)
+partial_multipole_length(m::AbstractKernelIndependent) = local_length(m)
 near_kernel(m::AbstractKernelIndependent) = m.kernel
 function operator_eltype(m::AbstractKernelIndependent)
     R = floattype(m.kernel)

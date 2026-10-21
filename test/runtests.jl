@@ -63,4 +63,7 @@ include("operator_checks.jl")
     @testset "square surfaces and spectral translation" begin
         include("test_cubeki.jl")
     end
+    @testset "three dimensions" begin
+        include("test_3d.jl")
+    end
 end

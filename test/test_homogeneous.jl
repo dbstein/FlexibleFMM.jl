@@ -92,5 +92,5 @@ end
     @test FlexibleFMM.dimension(m) == 2
     pts3 = [SVector(rand(rng), rand(rng), rand(rng)) for _ in 1:100]
     @test_throws ArgumentError FMM(m, pts3; ppl=10)
-    @test_throws ArgumentError StokesFMMPlan(pts3)
+    @test_throws ArgumentError StokesFMMPlan(pts3; method=:ki)     # circles are 2D
 end

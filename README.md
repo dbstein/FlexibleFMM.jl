@@ -1,16 +1,17 @@
 # FlexibleFMM
 
-A pure-Julia fast multipole method framework in two dimensions. One driver runs
-several expansion schemes on an adaptive quadtree whose ghost-cell construction makes
-every far-field interaction a same-width multipole-to-local translation and every
-near-field interaction a same-level colleague sum. Three schemes are provided:
+A pure-Julia fast multipole method framework in two and three dimensions. One
+driver runs several expansion schemes on an adaptive quadtree or octree whose
+ghost-cell construction makes every far-field interaction a same-width
+multipole-to-local translation and every near-field interaction a same-level
+colleague sum. Three schemes are provided:
 
 - `KernelIndependent` — the kernel-independent FMM of Ying, Biros and Zorin
   (equivalent densities on circles); needs only kernel evaluations, for kernels that
   are Green's functions of an elliptic PDE (Laplace, Helmholtz, Yukawa, …).
 - `CubeKernelIndependent{D}` (`SquareKernelIndependent` in 2D) — the same method on the
-  surface of a square or cube (`p` points per edge, margin `d`), with translation
-  operators applied by FFT; written for any dimension.
+  surface of a square or cube (`p` points per edge, `2p` on the larger surface, margin
+  `d`), with translation operators applied by FFT; the method for 3D.
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
 
@@ -40,14 +41,17 @@ densities sums its parts. `evaluate(f, st, targets; output=Gradient())` returns
 `∇u` as `SVector`s. Dual-number positions, densities and targets go through
 unchanged (directional and shape derivatives).
 
-Stokes: `Stokeslet2D()` with stokeslet (`SVector`), `Stresslet(f, ν)`, `Doublet(g)` and
-`Rotlet(ω)` densities, velocity, pressure and velocity-gradient outputs, and a plan
-API in the shape of JellySim's kernel backends (`StokesFMMPlan`, `stokes_fmm_eval!`,
-`StokesFMMKernel`); see `docs/stokes.md`.
+Stokes: `Stokeslet2D()` and `Stokeslet3D()` (JellySim's `1/8π` conventions) with
+stokeslet (`SVector`), `Stresslet(f, ν)`, `Doublet(g)` and `Rotlet(ω)` densities,
+velocity, pressure and velocity-gradient outputs, and a plan API in the shape of
+JellySim's kernel backends (`StokesFMMPlan`, `stokes_fmm_eval!`, `StokesFMMKernel`);
+see `docs/stokes.md`.
 
-Kernels are callables `K(source, target)` on `SVector{2}`s; `Laplace2D()`,
-`Helmholtz2D(k)` and `Yukawa2D(k)` are provided and any translation-invariant
-function of the same shape works. `build_expansions!` reuses a state for new
+Kernels are callables `K(source, target)` on `SVector`s; `Laplace2D()`,
+`Helmholtz2D(k)`, `Yukawa2D(k)` and their 3D versions `Laplace3D()`, `Helmholtz3D(k)`,
+`Yukawa3D(k)` (`1/4πr` normalisation) are provided and any translation-invariant
+function of the same shape works. In 3D use `CubeKernelIndependent{3}(K; p=8)` with
+`SVector{3}` points. `build_expansions!` reuses a state for new
 densities; an `OperatorCache` passed to several `FMM`s shares their translation
 operators (root boxes are snapped to cached widths). Targets must lie inside the
 root box.
@@ -60,7 +64,10 @@ worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 4
 rounding floor `~1e-14` near 64) and global relative errors one to two orders
 smaller (10 digits at 32 points on uniform data); see `docs/kifmm.md`, also for the
 two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz resonances
-at `k·w ≈ 3.40, 5.42, …`). The black-box method converges geometrically in `p`.
+at `k·w ≈ 3.40, 5.42, …`). The black-box method converges geometrically in `p`. In
+3D the cube method at `p = 8` has a worst-case translation error of `1e-6` for
+Laplace (global errors about `1e-7`) and `3e-6`, `4e-5`, `1e-3` for stokeslets,
+stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
 
 ## Layout
 

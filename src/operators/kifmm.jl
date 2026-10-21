@@ -55,6 +55,15 @@ zero pressure).
     d = t - s
     return (2 * K.c / _sqnorm(d)) * d
 end
+# The same augmentations in 3D (a unit mass source has velocity d/(4π r³)); used by the
+# cube method, which is the only kernel-independent method in 3D.
+pins_pressure(::Stokeslet3D) = true
+has_flux_source(::Stokeslet3D) = true
+@inline function source_velocity(K::Stokeslet3D, s::SVector{3}, t::SVector{3})
+    d = t - s
+    r2 = _sqnorm(d)
+    return (2 * K.c / (r2 * sqrt(r2))) * d
+end
 
 function circle_points(n::Int, r::R) where {R<:AbstractFloat}
     return [r * SVector{2,R}(cos(θ), sin(θ)) for θ in (2 * R(π) / n) .* (0:n-1)]

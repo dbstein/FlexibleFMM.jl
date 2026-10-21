@@ -133,7 +133,9 @@ the near field grows by a bounded factor.
 
 Nothing in this file except the constants: 8 children, 27 colleagues,
 `7³ − 3³ = 316` far offsets, and `child_offsets`/`colleague_offsets`/`far_offsets`
-enumerate them generically from the dimension parameter `D`. What does not carry
-over for free is the operator side (sphere or cube equivalent surfaces, `p³`
-Chebyshev grids) and the memory of 316 dense M2L operators per level, which needs
-symmetry or FFT compression.
+enumerate them generically from the dimension parameter `D`. The same builder,
+invariants and coverage check run on 3D point sets (uniform, clustered, a sphere, a
+helix, one octant, and a sphere with a tight cluster) in `test/test_3d.jl`. What
+does not carry over for free is the operator side: the cube surfaces with spectral
+translations (`docs/kifmm.md`) are the 3D method, since 316 dense M2L operators per
+level would not fit; circles and the Chebyshev black box remain 2D.

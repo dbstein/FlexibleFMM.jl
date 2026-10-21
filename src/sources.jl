@@ -74,10 +74,10 @@ end
 """
     Rotlet(ω)
 
-A point torque `ω` (2D: a scalar).
+A point torque `ω` (2D: a scalar, 3D: an `SVector{3}`).
 """
-struct Rotlet{T<:Number}
-    ω::T
+struct Rotlet{W}
+    ω::W
 end
 
 """
@@ -90,7 +90,7 @@ density_scalar(::Type{Dipole{D,T}}) where {D,T} = T
 density_scalar(::Type{SVector{D,T}}) where {D,T} = T
 density_scalar(::Type{Stresslet{D,T}}) where {D,T} = T
 density_scalar(::Type{Doublet{D,T}}) where {D,T} = T
-density_scalar(::Type{Rotlet{T}}) where {T} = T
+density_scalar(::Type{Rotlet{W}}) where {W} = density_scalar(W)
 density_scalar(::Type{T}) where {T<:Tuple} = promote_type(map(density_scalar, fieldtypes(T))...)
 
 # ---- kernel derivatives: generic fallbacks by ForwardDiff on the kernel ----
@@ -197,5 +197,55 @@ end
     return b * (df * I2 + d * transpose(f) - f * transpose(d)) - (2b * df / r2) * (d * transpose(d))
 end
 @inline function target_field(K::Stokeslet2D, s::SVector{2}, t::SVector{2}, τ::Union{Stresslet{2},Doublet{2},Rotlet}, ::Gradient)
+    return ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)
+end
+
+# ---- Stokes fields, 3D (JellySim's conventions; d = t - s, r = |d|, c = 1/8π) ----
+#   stokeslet f:      u = c(f/r + d(d·f)/r³),                      p = 2c(d·f)/r³
+#   Stresslet(f, ν):  u = -6c d (d·f)(d·ν)/r⁵  (JellySim's -3/4π),  p = 4c[(f·ν)/r³ - 3(d·f)(d·ν)/r⁵]
+#   Doublet(g):       u = c(g/r³ - 3d(d·g)/r⁵) = ½∇²G·g,            p = 0
+#   Rotlet(ω):        u = c ω×d/r³ = ½ ε_{jkl} ω_j ∂_{s_k} G_{il},   p = 0
+const Rotlet3 = Rotlet{<:SVector{3}}
+
+@inline source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}) = K(s, t) * f
+@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3})
+    d = t - s
+    r2 = _sqnorm(d)
+    return (-(6 * K.c) * sum(d .* τ.f) * sum(d .* τ.ν) / (r2 * r2 * sqrt(r2))) * d
+end
+@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Doublet{3})
+    d = t - s
+    r2 = _sqnorm(d)
+    g = τ.g
+    return (K.c / (r2 * sqrt(r2))) * (g - (3 * sum(d .* g) / r2) * d)
+end
+@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Rotlet3)
+    d = t - s
+    r2 = _sqnorm(d)
+    return (K.c / (r2 * sqrt(r2))) * cross(τ.ω, d)
+end
+
+@inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Pressure) =
+    sum(pressure_kernel(K, s, t) .* f)
+@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Pressure)
+    d = t - s
+    r2 = _sqnorm(d)
+    r3 = r2 * sqrt(r2)
+    return (4 * K.c) * (sum(τ.f .* τ.ν) / r3 - 3 * sum(d .* τ.f) * sum(d .* τ.ν) / (r3 * r2))
+end
+@inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Doublet{3},Rotlet3}, ::Pressure) =
+    zero(promote_type(eltype(s), eltype(t), density_scalar(typeof(τ)), typeof(K.c)))
+@inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Tuple, out::Pressure) =
+    _sum_targets(K, s, t, out, τ...)
+
+@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Gradient)
+    d = t - s
+    r2 = _sqnorm(d)
+    df = sum(d .* f)
+    b = K.c / (r2 * sqrt(r2))
+    I3 = one(SMatrix{3,3,typeof(b)})
+    return b * (df * I3 + d * transpose(f) - f * transpose(d)) - (3b * df / r2) * (d * transpose(d))
+end
+@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Stresslet{3},Doublet{3},Rotlet3}, ::Gradient)
     return ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)
 end

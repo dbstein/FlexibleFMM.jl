@@ -22,16 +22,16 @@ A kernel `K(s, t) = scale(K)·f(|t - s|)`. Subtypes define `scale(K)`, `radial_v
 and `radial_derivatives(K, r) -> (f, f′, f″)`; evaluation, gradient and Hessian follow.
 """
 abstract type AbstractRadialKernel <: AbstractKernel end
-@inline function (K::AbstractRadialKernel)(s::SVector{2}, t::SVector{2})
+@inline function (K::AbstractRadialKernel)(s::SVector{D}, t::SVector{D}) where {D}
     return scale(K) * radial_value(K, sqrt(_sqnorm(t - s)))
 end
-@inline function gradient_t(K::AbstractRadialKernel, s::SVector{2}, t::SVector{2})
+@inline function gradient_t(K::AbstractRadialKernel, s::SVector{D}, t::SVector{D}) where {D}
     d = t - s
     r = sqrt(_sqnorm(d))
     _, f′, _ = radial_derivatives(K, r)
     return (scale(K) * f′ / r) * d
 end
-@inline function hessian_t(K::AbstractRadialKernel, s::SVector{2}, t::SVector{2})
+@inline function hessian_t(K::AbstractRadialKernel, s::SVector{D}, t::SVector{D}) where {D}
     d = t - s
     r2 = _sqnorm(d)
     r = sqrt(r2)
@@ -39,7 +39,7 @@ end
     c = scale(K)
     a = c * (f″ / r2 - f′ / (r2 * r))
     b = c * f′ / r
-    return a * (d * transpose(d)) + b * one(SMatrix{2,2,typeof(b)})
+    return a * (d * transpose(d)) + b * one(SMatrix{D,D,typeof(b)})
 end
 
 """
@@ -111,6 +111,97 @@ end
     k1 = oftype(kr, besselk(1, kr))
     return k0, -K.k * k1, K.k^2 * (k0 + k1 / kr)
 end
+
+# ---- 3D kernels: 1/(4π r) scalar potentials and JellySim's 1/(8π) Stokeslet ----
+
+"""
+    Laplace3D(T=Float64)
+
+Free-space Laplace Green's function `1/(4π|t - s|)`, with constants in precision `T`.
+"""
+struct Laplace3D{T<:AbstractFloat} <: AbstractRadialKernel
+    c::T       # 1/(4π)
+end
+Laplace3D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace3D{T}(1 / (4 * T(π)))
+floattype(::Laplace3D{T}) where {T} = T
+@inline scale(K::Laplace3D) = K.c
+@inline radial_value(::Laplace3D, r) = 1 / r
+@inline function radial_derivatives(::Laplace3D, r)
+    ir = 1 / r
+    ir2 = ir * ir
+    return ir, -ir2, 2 * ir2 * ir
+end
+homogeneity(::Laplace3D) = -1
+
+"""
+    Helmholtz3D(k)
+
+Helmholtz Green's function `e^{ik|t - s|}/(4π|t - s|)` (complex valued).
+"""
+struct Helmholtz3D{T<:AbstractFloat} <: AbstractRadialKernel
+    k::T
+    c::T       # 1/(4π)
+end
+Helmholtz3D(k::Real) = (T = typeof(float(k)); Helmholtz3D{T}(T(k), 1 / (4 * T(π))))
+floattype(::Helmholtz3D{T}) where {T} = T
+@inline scale(K::Helmholtz3D) = K.c
+@inline radial_value(K::Helmholtz3D, r) = cis(K.k * r) / r
+@inline function radial_derivatives(K::Helmholtz3D, r)
+    k = K.k
+    ir = 1 / r
+    ir2 = ir * ir
+    e = cis(k * r)
+    return e * ir, e * (im * k * ir - ir2), e * (-k * k * ir - 2im * k * ir2 + 2 * ir2 * ir)
+end
+
+"""
+    Yukawa3D(k)
+
+Modified Helmholtz (Yukawa) Green's function `e^{-k|t - s|}/(4π|t - s|)`.
+"""
+struct Yukawa3D{T<:AbstractFloat} <: AbstractRadialKernel
+    k::T
+    c::T       # 1/(4π)
+end
+Yukawa3D(k::Real) = (T = typeof(float(k)); Yukawa3D{T}(T(k), 1 / (4 * T(π))))
+floattype(::Yukawa3D{T}) where {T} = T
+@inline scale(K::Yukawa3D) = K.c
+@inline radial_value(K::Yukawa3D, r) = exp(-K.k * r) / r
+@inline function radial_derivatives(K::Yukawa3D, r)
+    k = K.k
+    ir = 1 / r
+    ir2 = ir * ir
+    e = exp(-k * r)
+    return e * ir, -e * (k * ir + ir2), e * (k * k * ir + 2 * k * ir2 + 2 * ir2 * ir)
+end
+
+"""
+    Stokeslet3D(T=Float64)
+
+The 3D Stokeslet `(1/8π)(I + r̂r̂ᵀ)/r`, an `SMatrix{3,3}`, in JellySim's convention:
+`K(s,t)·f` is the velocity at `t` of a point force `f` at `s` with unit viscosity (μ
+is carried by the densities). Its pressure is `pressure_kernel(K, s, t)·f =
+(r̂·f)/(4π r²)`. The singularities built on it (`Stresslet`, `Doublet`, `Rotlet`)
+follow JellySim's `-3/(4π)` and `1/(8π)` kernels; see docs/stokes.md.
+"""
+struct Stokeslet3D{T<:AbstractFloat} <: AbstractKernel
+    c::T       # 1/(8π)
+end
+Stokeslet3D(::Type{T}=Float64) where {T<:AbstractFloat} = Stokeslet3D{T}(1 / (8 * T(π)))
+floattype(::Stokeslet3D{T}) where {T} = T
+@inline function (K::Stokeslet3D)(s::SVector{3}, t::SVector{3})
+    d = t - s
+    r2 = _sqnorm(d)
+    a = K.c / sqrt(r2)
+    b = a / r2
+    return a * one(SMatrix{3,3,typeof(a)}) + b * (d * transpose(d))
+end
+@inline function pressure_kernel(K::Stokeslet3D, s::SVector{3}, t::SVector{3})
+    d = t - s
+    r2 = _sqnorm(d)
+    return (2 * K.c / (r2 * sqrt(r2))) * d
+end
+homogeneity(::Stokeslet3D) = -1
 
 """
     LaplaceDipoleTest(c)
@@ -189,8 +280,8 @@ _ncomp(::Type{<:SMatrix{m}}) where {m} = m
 The degree `a` such that `K(λs, λt) = λ^a K(s, t)` for all `λ > 0`, or `nothing` if
 the kernel is not homogeneous. For a homogeneous kernel the translation operators of
 all box widths are scalar multiples of one reference set, which the operator cache
-then shares between levels (none of the built-in 2D kernels qualifies: they contain
-logarithms or Bessel functions; 3D power-law kernels do).
+then shares between levels (no built-in 2D kernel qualifies: they contain logarithms
+or Bessel functions; `Laplace3D` and `Stokeslet3D` have degree -1).
 """
 homogeneity(K) = nothing
 

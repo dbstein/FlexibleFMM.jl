@@ -72,10 +72,34 @@ report or regularise the degeneracies below.
 The second surface family, after Ying, Biros and Zorin, works in any dimension: the
 small surface is the set of boundary points of the `p`-per-edge lattice on the
 square or cube of half-width `(1+d)·r` (`4p − 4` points in 2D, `6p² − 12p + 8` in 3D),
-the large one the same lattice on `(3 − 2d)·r`, with `r` the box half-width. The
-margin `d` keeps corner sources off the equivalent surface and the large surface
-inside the nearest far box (whose face is at `3r`). Everything above (factored
-solves, Stokes pin and source, rescaling) is shared with the circle method.
+the large one the boundary points of a `pc`-per-edge lattice on `(3 − 2d)·r`, with
+`r` the box half-width and `pc = 2p` by default. The margin `d` keeps corner sources
+off the equivalent surface and the large surface inside the nearest far box (whose
+face is at `3r`). Everything above (factored solves, Stokes pin and source,
+rescaling) is shared with the circle method.
+
+Why the large surface is finer. With `pc = p` its lattice spacing is
+`(3 − 2d)/(1 + d) ≈ 2.5` times that of the small one, so as the upward check it
+undersamples the equivalent density: density modes whose field is small *at the
+check samples* but not between them get singular values of `1e-11` (3D, `p = 8`),
+far below their true size, and the fit either keeps them and amplifies rounding or
+truncates them and loses what they carry. Laplace charges hardly notice (the data
+are smooth), but anything with faster decay does: in 3D at `p = 8` the stresslet and
+doublet translations were off by `0.2` and `0.8` in the worst case and no choice of
+truncation tolerance brought them below `1e-3`. Doubling the points per edge on the
+large surface (`pc = 2p`, 4.6× the points in 3D) removes the problem: `5e-5` and
+`1e-3`, with the stokeslet at `3e-6` against `2e-3` before, and the truncation
+tolerance no longer matters. A finer large surface is needed in both of its roles;
+refining only the upward check (keeping the downward equivalent density coarse)
+recovers a tenth of the gain. In 2D the same change improves the Stokes
+translations ten to twenty-five times (stokeslet, stresslet, doublet worst cases
+`5e-6, 6e-5, 5e-4` at `p = 8`, `2e-8, 1e-7, 2e-6` at `p = 12`, `3e-11, 2e-10, 5e-9`
+at `p = 16`) and Laplace two to forty times (table below). Circles have no such
+problem: the equispaced circle-to-circle map is diagonal in the Fourier modes, so
+nothing is aliased. The
+cost of `pc = 2p` is in `s2m!` and `l2t` (kernel evaluations at `nlarge` points per
+source or target) and in the dense M2M/L2L sizes; the spectral translations, which
+use only the small lattice, are unchanged.
 
 What the lattice buys is the translation. The source's small surface and the
 target's small surface are lattices with the same spacing `h`, so the kernel between
@@ -98,17 +122,37 @@ corrections applied per pair. Dual-number and complex expansions are split into
 their real or complex parts for the transforms (they are linear), so the path stays
 differentiable.
 
-Measured worst case (corner source, facing targets, Laplace) at equal point counts:
+Measured worst case (corner source, facing targets, Laplace, 2D) against circles
+with the same number of small-surface points:
 
-| points | 20 | 28 | 36 | 44 |
+| small-surface points | 20 | 28 | 36 | 44 |
 |---|---|---|---|---|
-| square, d = 0.05 | 2e-5 | 2e-6 | 5e-8 | 5e-9 |
-| square, d = 0.1 | 6e-5 | 4e-6 | 1e-7 | 1e-8 |
-| square, d = 0.2 | 2e-4 | 1e-5 | 4e-7 | 2e-8 |
+| square, d = 0.05 | 1e-5 | 3e-7 | 3e-9 | 2e-10 |
+| square, d = 0.1 | 1e-5 | 6e-7 | 6e-9 | 3e-10 |
+| square, d = 0.2 | 2e-5 | 7e-7 | 1e-8 | 3e-10 |
 | circles | 3e-4 | 1e-5 | 2e-7 | 2e-8 |
 
-Squares with a small margin are two to four times more accurate than circles at the
-same number of points. For the Stokes kernel the random-box translation error at
-`p = 8, 12, 16, 20` is `8e-5, 4e-8, 9e-11, 3e-12` (stresslet sources about ten
-times worse), about a hundred times the Laplace error at the same `p`, the same as
-with circles.
+In 3D (`d = 0.1`, the same worst case, with the large-surface count in parentheses):
+
+| p (small / large points) | Laplace | stokeslet | stresslet | doublet |
+|---|---|---|---|---|
+| 6 (152 / 728) | 2e-5 | 1e-4 | 1e-3 | 2e-2 |
+| 8 (296 / 1352) | 1e-6 | 3e-6 | 4e-5 | 1e-3 |
+| 10 (488 / 2168) | 3e-8 | | | |
+
+Global errors on uniform or surface distributions are one to three orders smaller
+(Laplace `1e-7`, Stokes with all three singularities `1e-6` at `p = 8`); a tight
+cluster of doublets can expose the doublet's worst case. The Stokes rows show that
+the error grows with the singularity's order of decay (`1/r`, `1/r²`, `1/r³`), as it
+does for Laplace dipoles (`1e-4` at `p = 8`); stresslets and doublets ask more of
+the equivalent density than charges do.
+
+Memory in 3D. The spectral path keeps the transformed multipoles and the
+accumulated check data of a level in arrays of `(2p)³` complex numbers per box and
+component (per real/complex part for dual or complex expansions): `128 KB` per box
+for Laplace at `p = 8`, three times that for Stokes, about `600 MB` for `10⁵`
+uniform points and `6 GB` for `10⁶`. Real-input transforms (halving the frequencies
+of a real kernel), single precision for the transforms, and processing the target
+boxes of a level in chunks are the planned mitigations. The dense operators of a
+level are `nlarge·nc × 2³·(nsurface·nc + 1)` for M2M and its transpose shape for
+L2L, `230 MB` each for Stokes at `p = 8`, built once for a homogeneous kernel.

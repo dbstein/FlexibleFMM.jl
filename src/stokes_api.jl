@@ -5,15 +5,16 @@
 # evaluation. μ is carried by the densities, as in JellySim.
 
 """
-    StokesFMMPlan(sources; targets=nothing, method=:ki, nequiv=60, p=12, ppl=50,
-                  bbox=nothing, precision=Float64, cache=nothing)
+    StokesFMMPlan(sources; targets=nothing, method=nothing, nequiv=60, p=nothing, pc=nothing,
+                  d=0.1, ppl=50, bbox=nothing, precision=Float64, cache=nothing)
 
 Tree and operators for a fixed geometry (`sources` and, if given, `targets`, both
 vectors of `SVector` or `D × N` matrices). `method` is `:ki` (kernel independent on
 circles, `nequiv` points; 2D), `:square` or `:cube` (synonyms: kernel independent
-on square/cube surfaces, `p` points per edge and margin `d`, spectral translations;
-any dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
-velocity only; 2D). The first two support every singularity and the pressure.
+on square/cube surfaces, `p` points per edge, `pc = 2p` on the large surface, margin
+`d`, spectral translations; any dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
+velocity only; 2D). The first two support every singularity and the pressure. The
+defaults are `:ki` in 2D and `:cube` in 3D, with `p = 12` in 2D and `p = 8` in 3D.
 """
 mutable struct StokesFMMPlan{D,F<:FMM,T}
     fmm::F
@@ -28,19 +29,23 @@ end
 The Stokes kernel of the Stokes front end in `D` dimensions.
 """
 stokeslet_kernel(::Val{2}, ::Type{T}) where {T} = Stokeslet2D(T)
+stokeslet_kernel(::Val{3}, ::Type{T}) where {T} = Stokeslet3D(T)
 stokeslet_kernel(::Val{D}, ::Type{T}) where {D,T} = throw(ArgumentError("no Stokes kernel in $D dimensions yet"))
 
 _value(x::Real) = x
 _value(x::ForwardDiff.Dual) = ForwardDiff.value(x)
 _values(pts::AbstractVector{<:SVector{D}}) where {D} = [SVector{D}(map(_value, p)) for p in pts]
 
-function StokesFMMPlan(sources; targets=nothing, method::Symbol=:ki, nequiv::Integer=60,
-                       p::Integer=12, d::Real=0.1, ppl::Integer=50, bbox=nothing,
-                       precision::Type{<:AbstractFloat}=Float64, cache=nothing)
+function StokesFMMPlan(sources; targets=nothing, method::Union{Nothing,Symbol}=nothing, nequiv::Integer=60,
+                       p::Union{Nothing,Integer}=nothing, pc::Union{Nothing,Integer}=nothing, d::Real=0.1,
+                       ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64, cache=nothing)
     D = point_dimension(sources)
+    method === nothing && (method = D == 2 ? :ki : :cube)
+    p === nothing && (p = D == 2 ? 12 : 8)
+    pc === nothing && (pc = 2p)
     K = stokeslet_kernel(Val(D), precision)
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
-        method === :square || method === :cube ? CubeKernelIndependent{D}(K; p=p, d=d) :
+        method === :square || method === :cube ? CubeKernelIndependent{D}(K; p=p, pc=pc, d=d) :
         method === :bb ? BlackBox(K; p=p) :
         throw(ArgumentError("method must be :ki, :square (= :cube) or :bb"))
     pts = _values(as_svectors(Val(D), sources))

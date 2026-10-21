@@ -2,10 +2,11 @@ using FlexibleFMM: Tree, nlevels, nnodes, npoints, center, width, has_children, 
     locate, locate!, bucket_by_node, square_bbox, child_slot, child_offsets,
     colleague_offsets, self_colleague_slot, is_far_offset, m2l_table_index, npairs, pair_range
 
-const NC2 = 4
 
 # Every structural invariant of the ghost-cell tree, checked by brute force.
 function check_tree_invariants(tree, original)
+    D = length(eltype(original))
+    NC = 1 << D
     N = length(original)
     n = nnodes(tree)
     L = nlevels(tree)
@@ -17,15 +18,15 @@ function check_tree_invariants(tree, original)
     @test all(tree.level[i] == l for l in 1:L for i in tree.level_range[l])
     @test tree.points[1] == 1:N
     @test tree.parent[1] == 0
-    @test tree.cell[1] == zero(SVector{2,Int})
-    offs = child_offsets(Val(2))
+    @test tree.cell[1] == zero(SVector{D,Int})
+    offs = child_offsets(Val(D))
     for i in 1:n
         l = tree.level[i]
         w = width(tree, l)
         @test all(0 .<= tree.cell[i] .< 2^(l - 1))
         # single-rounding edges, bitwise consistent with the centers the builder splits on
-        blo = tree.origin + SVector{2,Float64}(tree.cell[i]) * w
-        bhi = tree.origin + SVector{2,Float64}(tree.cell[i] .+ 1) * w
+        blo = tree.origin + SVector{D,Float64}(tree.cell[i]) * w
+        bhi = tree.origin + SVector{D,Float64}(tree.cell[i] .+ 1) * w
         @test all(all(blo .<= sp[j] .<= bhi) for j in tree.points[i])
         @test tree.has_source[i] == !isempty(tree.points[i])
         @test !(tree.ghost[i] && tree.leaf[i])
@@ -36,9 +37,9 @@ function check_tree_invariants(tree, original)
             @test [tree.cell[c] for c in ch] == [2tree.cell[i] + o for o in offs]
             @test first(tree.points[first(ch)]) == first(tree.points[i])
             @test last(tree.points[last(ch)]) == last(tree.points[i])
-            @test all(last(tree.points[ch[k]]) + 1 == first(tree.points[ch[k+1]]) for k in 1:NC2-1)
+            @test all(last(tree.points[ch[k]]) + 1 == first(tree.points[ch[k+1]]) for k in 1:NC-1)
             c = center(tree, i)
-            @test all(child_slot(sp[j], c) == k for k in 1:NC2 for j in tree.points[ch[k]])
+            @test all(child_slot(sp[j], c) == k for k in 1:NC for j in tree.points[ch[k]])
             @test !tree.ghost[i]
             if tree.leaf[i]
                 @test tree.xlist[i]
@@ -55,23 +56,23 @@ function check_tree_invariants(tree, original)
     @test isempty(tree.group_parent[1])
     for l in 2:L
         r = tree.level_range[l]
-        @test length(r) % NC2 == 0
+        @test length(r) % NC == 0
         gp = tree.group_parent[l]
-        @test length(gp) == length(r) ÷ NC2
+        @test length(gp) == length(r) ÷ NC
         for (g, p) in enumerate(gp)
-            f = first(r) + (g - 1) * NC2
+            f = first(r) + (g - 1) * NC
             @test tree.child_first[p] == f
-            @test all(tree.parent[f+k] == p for k in 0:NC2-1)
+            @test all(tree.parent[f+k] == p for k in 0:NC-1)
         end
     end
     # unique cells and brute-force colleagues
-    coffs = colleague_offsets(Val(2))
+    coffs = colleague_offsets(Val(D))
     for l in 1:L
         r = tree.level_range[l]
         @test allunique(tree.cell[r])
         lookup = Dict(tree.cell[i] => i for i in r)
         for i in r
-            @test tree.colleagues[self_colleague_slot(Val(2)), i] == i
+            @test tree.colleagues[self_colleague_slot(Val(D)), i] == i
             for (k, o) in enumerate(coffs)
                 @test tree.colleagues[k, i] == get(lookup, tree.cell[i] + o, 0)
             end

@@ -3,12 +3,14 @@
 #
 #     julia --project=. -t auto bench/bench.jl N=1000000 ppl=25,50,100 \
 #           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,square:12,bb:12
+#     julia --project=. -t auto bench/bench.jl dim=3 N=100000 kernel=laplace,stokes method=cube:8
 #
-# Defaults: N=100000, ppl=50, dist=uniform,circle,clustered, kernel=laplace,helmholtz:10,
-# method=ki:60,bb:12. Kernels: laplace, helmholtz:k, yukawa:k, stokes (stokeslets with
-# random vector densities). Methods: ki:nequiv (kernel-independent on circles), square:p or
-# square:p:d (kernel-independent on squares, p points per edge, margin d, FFT translations),
-# bb:p (black-box).
+# Defaults: dim=2, N=100000, ppl=50, dist=uniform,circle,clustered (sphere for the circle in
+# 3D), kernel=laplace,helmholtz:10, method=ki:60,bb:12 (cube:8 in 3D). Kernels: laplace,
+# helmholtz:k, yukawa:k, stokes (stokeslets with random vector densities), each in the
+# dimension given. Methods: ki:nequiv (kernel-independent on circles, 2D), square:p or
+# cube:p, optionally :d (kernel-independent on squares/cubes, p points per edge, margin d,
+# FFT translations, pc = 2p), bb:p (black-box, 2D).
 #
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
 # is split. It trades near-field work (∝ ppl per target) against the number of boxes
@@ -29,49 +31,61 @@ using Random
 using Printf
 using LinearAlgebra
 
-const P2 = SVector{2,Float64}
 const CORES = max(1, Sys.CPU_THREADS ÷ 2)
 
-uniform(rng, N) = [P2(rand(rng), rand(rng)) for _ in 1:N]
-circle(rng, N) = [0.5 .+ 0.4 * P2(cos(t), sin(t)) for t in 2π .* rand(rng, N)]
-function clustered(rng, N)
-    centers = [P2(0.1 + 0.8rand(rng), 0.1 + 0.8rand(rng)) for _ in 1:10]
-    return [centers[1 + (i - 1) % 10] + 0.01 * P2(randn(rng), randn(rng)) for i in 1:N]
+# point distributions in the unit square / cube
+uniform(rng, N, ::Val{D}) where {D} = [rand(rng, SVector{D,Float64}) for _ in 1:N]
+circle(rng, N, ::Val{2}) = [0.5 .+ 0.4 * SVector(cos(t), sin(t)) for t in 2π .* rand(rng, N)]
+circle(rng, N, ::Val{3}) = [SVector(0.5, 0.5, 0.5) + 0.4 * normalize(randn(rng, SVector{3,Float64})) for _ in 1:N]
+function clustered(rng, N, ::Val{D}) where {D}
+    centers = [0.1 .+ 0.8 .* rand(rng, SVector{D,Float64}) for _ in 1:10]
+    return [centers[1 + (i - 1) % 10] + 0.01 * randn(rng, SVector{D,Float64}) for i in 1:N]
 end
-const GENERATORS = Dict("uniform" => uniform, "circle" => circle, "clustered" => clustered)
+const GENERATORS = Dict("uniform" => uniform, "circle" => circle, "sphere" => circle, "clustered" => clustered)
 
-function parse_kernel(s)
+function parse_kernel(s, ::Val{D}) where {D}
     name, rest = occursin(":", s) ? split(s, ":") : (s, "")
-    name == "laplace" && return ("Laplace", Laplace2D())
-    name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz2D(parse(Float64, rest)))
-    name == "yukawa" && return ("Yukawa k=$rest", Yukawa2D(parse(Float64, rest)))
-    name == "stokes" && return ("Stokes", Stokeslet2D())
+    k = isempty(rest) ? 0.0 : parse(Float64, rest)
+    if D == 2
+        name == "laplace" && return ("Laplace", Laplace2D())
+        name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz2D(k))
+        name == "yukawa" && return ("Yukawa k=$rest", Yukawa2D(k))
+        name == "stokes" && return ("Stokes", Stokeslet2D())
+    else
+        name == "laplace" && return ("Laplace", Laplace3D())
+        name == "helmholtz" && return ("Helmholtz k=$rest", Helmholtz3D(k))
+        name == "yukawa" && return ("Yukawa k=$rest", Yukawa3D(k))
+        name == "stokes" && return ("Stokes", Stokeslet3D())
+    end
     error("unknown kernel $s (laplace, helmholtz:k, yukawa:k, stokes)")
 end
-function parse_method(s, K)
+function parse_method(s, K, ::Val{D}) where {D}
     parts = split(s, ":")
     name, rest = parts[1], parts[2]
-    name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))
-    if name == "square"
+    if name == "square" || name == "cube"
         d = length(parts) > 2 ? parse(Float64, parts[3]) : 0.1
-        return ("Square$rest d=$d", SquareKernelIndependent(K; p=parse(Int, rest), d=d))
+        return ("$(D == 2 ? "Square" : "Cube")$rest d=$d", CubeKernelIndependent{D}(K; p=parse(Int, rest), d=d))
     end
+    D == 2 || error("method $s is 2D; use cube:p[:d] in 3D")
+    name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))
     name == "bb" && return ("BB$rest", BlackBox(K; p=parse(Int, rest)))
-    error("unknown method $s (ki:nequiv, square:p[:d], bb:p)")
+    error("unknown method $s (ki:nequiv, square:p[:d] / cube:p[:d], bb:p)")
 end
 density(rng, K, N) = randn(rng, N)
-density(rng, ::Stokeslet2D, N) = [P2(randn(rng), randn(rng)) for _ in 1:N]
+density(rng, ::Stokeslet2D, N) = [randn(rng, SVector{2,Float64}) for _ in 1:N]
+density(rng, ::Stokeslet3D, N) = [randn(rng, SVector{3,Float64}) for _ in 1:N]
 
 kpsc(n, t) = n / t / CORES / 1000
 
 function run_case(label, m, pts, τ, targets; ppl)
     N = length(pts); Nt = length(targets)
     nw = min(N, 4000)
-    fw = FMM(m, pts[1:nw]; ppl=ppl, bbox=(P2(0, 0), 1.0))        # warm-up (compilation)
+    box = (zero(eltype(pts)), 1.0)
+    fw = FMM(m, pts[1:nw]; ppl=ppl, bbox=box)                    # warm-up (compilation)
     sw = build_expansions(fw, pts[1:nw], τ[1:nw])
     evaluate_at_sources(fw, sw); evaluate(fw, sw, targets[1:1000])
     cache = fw.cache
-    t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=(P2(0, 0), 1.0), cache=cache)
+    t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
     st = FMMState(f, expansion_eltype(m, Float64, eltype(τ)), Float64, eltype(τ))
     perm = f.tree.perm
     st.sources .= pts[perm]; st.τ .= τ[perm]
@@ -84,15 +98,15 @@ function run_case(label, m, pts, τ, targets; ppl)
     return nothing
 end
 
-function main(N, ppls, dists, kernels, methods)
+function main(dim, N, ppls, dists, kernels, methods)
     rng = MersenneTwister(1)
-    println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES)
-    targets = uniform(rng, 1_000_000)
+    println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES, ", dimension: ", dim)
+    targets = uniform(rng, 1_000_000, Val(dim))
     for dname in dists
-        pts = GENERATORS[dname](rng, N)
+        pts = GENERATORS[dname](rng, N, Val(dim))
         for ppl in ppls, kspec in kernels, mspec in methods
-            kname, K = parse_kernel(kspec)
-            mname, m = parse_method(mspec, K)
+            kname, K = parse_kernel(kspec, Val(dim))
+            mname, m = parse_method(mspec, K, Val(dim))
             τ = density(rng, K, N)
             run_case("$kname $mname / $dname", m, pts, τ, targets; ppl=ppl)
         end
@@ -104,9 +118,11 @@ for a in ARGS
     k, v = split(a, "=")
     args[k] = v
 end
+dim = parse(Int, get(args, "dim", "2"))
+dim in (2, 3) || error("dim must be 2 or 3")
 N = parse(Int, get(args, "N", "100000"))
 ppls = parse.(Int, split(get(args, "ppl", "50"), ","))
 dists = String.(split(get(args, "dist", "uniform,circle,clustered"), ","))
 kernels = String.(split(get(args, "kernel", "laplace,helmholtz:10"), ","))
-methods = String.(split(get(args, "method", "ki:60,bb:12"), ","))
-main(N, ppls, dists, kernels, methods)
+methods = String.(split(get(args, "method", dim == 2 ? "ki:60,bb:12" : "cube:8"), ","))
+main(dim, N, ppls, dists, kernels, methods)

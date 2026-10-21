@@ -25,7 +25,8 @@ instances; root boxes are snapped to such widths (`fit_box!`). A method states i
 `dimension(m)`; the tree, lists, driver and evaluation are generic in it.
 
 For a kernel that is homogeneous, `K(λs, λt) = λᵃ K(s, t)` (declared by
-`homogeneity(K) = a`; 3D power-law kernels, none of the built-in 2D ones), the
+`homogeneity(K) = a`; `Laplace3D` and `Stokeslet3D` have `a = −1`, no built-in 2D
+kernel qualifies), the
 operators of all widths are scalar multiples of one reference set: the cache builds
 the reference width only and `rescale` makes the other widths from it, sharing the
 matrices and carrying per-width factors (`m2m_scale`, `l2l_scale`, `m2l_scale`, and
@@ -152,10 +153,9 @@ and `target_field` methods for the outputs it should support.
   `source_field`/`target_field` hooks; kernel matrices are assembled block-wise, the
   method owns the expansion length (the Stokes augmentations), and `Pressure()` is an
   output type evaluating the pressure kernel against the equivalent density.
-- **3D**: the tree, lists, driver, `CubeKernelIndependent{3}` and the
-  spectral translations are generic in `D`; `KernelIndependent` (circles) and
-  `BlackBox` are 2D. What is missing is the 3D kernels and their tests; see
-  `docs/tree.md`.
+- **3D**: done through `CubeKernelIndependent{3}` with `Laplace3D`, `Helmholtz3D`,
+  `Yukawa3D` and `Stokeslet3D`; `KernelIndependent` (circles) and `BlackBox` are 2D.
+  What 3D still needs is memory work on the spectral path (`docs/kifmm.md`).
 - **GPU** (KernelAbstractions): flat node arrays and CSR pair lists are already in
   place; `s2m!`, `l2t` and `evaluate_target` are allocation-free per-item bodies.
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
