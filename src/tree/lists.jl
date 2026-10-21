@@ -51,7 +51,29 @@ function build_interaction_lists(::Val{D}, level_range, cell, parent, child_firs
             src[pos[f]] = ss[q]
             pos[f] += 1
         end
-        ilists[l] = InteractionList(ptr, tgt, src)
+        # the same pairs by target (`ts` is already grouped by target, in level order),
+        # targets in Morton order
+        starts = Int[]
+        for q in eachindex(ts)
+            (q == 1 || ts[q] != ts[q-1]) && push!(starts, q)
+        end
+        push!(starts, length(ts) + 1)
+        ng = length(starts) - 1
+        nbits = min(l - 1, 64 ÷ D)
+        order = sortperm([morton_key(cell[ts[starts[g]]], nbits) for g in 1:ng])
+        torder = Vector{Int}(undef, ng)
+        tptr = Vector{Int}(undef, ng + 1)
+        tsrc = similar(ss)
+        tfar = similar(fs)
+        tptr[1] = 1
+        for (q, g) in enumerate(order)
+            r = starts[g]:starts[g+1]-1
+            torder[q] = ts[first(r)]
+            tptr[q+1] = tptr[q] + length(r)
+            tsrc[tptr[q]:tptr[q+1]-1] = ss[r]
+            tfar[tptr[q]:tptr[q+1]-1] = fs[r]
+        end
+        ilists[l] = InteractionList(ptr, tgt, src, torder, tptr, tsrc, tfar)
     end
     return ilists
 end

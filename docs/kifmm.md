@@ -110,17 +110,39 @@ of the density, embedded in the `p^D` lattice, with that table, which zero paddi
 forward transform per source box, one Hadamard product with the offset's table per
 interaction pair, and one inverse transform per target box, instead of a dense
 `N × N` product per pair: `(2p)^D` flops per pair instead of `N²`, which in 3D is 13×
-fewer at `p = 6` and 20× at `p = 8` and is the natural GPU formulation. In 2D it
-does not pay: `(2p)²` complex multiply-adds against `N²` real ones is a wash at
-`p = 12`, and the pair loop is memory bound (it streams `(2p)^D` complex numbers
-per pair from the transformed multipoles), so at 10⁶ uniform Laplace points the
-translations take about 6× longer than the dense circle operators (1.07 s against
-0.18 s, 12 threads); the 2D implementation exists to be tested, not to be fast. The
+fewer at `p = 6` and 20× at `p = 8` and is the natural GPU formulation. The
 driver's level-wise hook `m2l_level!` carries this; vector kernels use one table per
 component pair; the Stokes pressure row and point-source column are small dense
 corrections applied per pair. Dual-number and complex expansions are split into
 their real or complex parts for the transforms (they are linear), so the path stays
 differentiable.
+
+The Hadamard stage is organised for the cache rather than for the flop count. The
+spectra of a level are transposed into a frequency-blocked layout (`B` frequencies
+of every box contiguous, real parts then imaginary parts, `B` = 64 divided by the
+number of columns per box), threads own disjoint blocks, and within a block the
+pairs are walked target by target with the targets in Morton order of their cells
+(`InteractionList.torder`), so that a target's block stays in cache across its
+pairs and neighbouring targets reuse their sources; the component products of a
+vector kernel are fused into one pass per block. Walking the pairs offset by
+offset instead, which is what the dense path wants, streams every block once per
+pair and is bandwidth bound: it was 2.4× slower for Laplace in 3D. The stage runs
+at about 70 GFlop/s for Laplace and 50 for Stokes on 12 Apple cores (10 and 6 on
+one), and the Stokes translation is the 3D hot spot: 100 000 uniform points take
+0.5 s for the Laplace matvec and 4.5 s for Stokes at `p = 8`, almost all of it in
+the `nc² = 9` products per pair. The planned reductions are the symmetry of the
+Stokeslet tables (6 distinct products instead of 9), real-input transforms (a real
+kernel's spectrum is Hermitian, halving the frequencies) and fewer table streams
+per iteration. In 2D the spectral path does not pay: at 10⁶ uniform Laplace points
+the translations take about 4× longer than the dense circle operators (0.67 s
+against 0.17 s); the 2D implementation exists to be tested, not to be fast.
+
+Points per leaf matter more in 3D than in 2D, because every box carries
+`nlarge · nc` check values and its share of the translations while a surface
+distribution fragments the octree (100 000 points on a sphere give 87 000 nodes
+at `ppl = 50`). For Stokes on a sphere the matvec goes from 33 s at `ppl = 50` to
+5.4 s at 100 and 1.6 s at 400, with the near field still a small share; start
+from `ppl ≈ 200` for surface and fibre distributions in 3D.
 
 Measured worst case (corner source, facing targets, Laplace, 2D) against circles
 with the same number of small-surface points:

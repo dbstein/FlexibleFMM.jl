@@ -21,17 +21,40 @@
     SpectralM2L{R,D}
 
 Translation operator of one far offset: FFTs of the kernel tables (`nc²` of them,
-index `(a-1)·nc + b`, each of length `(2p)^D`), the lattice data (`p`, the linear
-index of each surface point in the padded lattice), and the dense pressure row and
+index `(a-1)·nc + b`, each of length `(2p)^D`), their real and imaginary parts as
+separate vectors for the level-wise path, the lattice data (`p`, the linear index
+of each surface point in the padded lattice), and the dense pressure row and
 point-source column of the Stokes augmentations (empty otherwise).
 """
 struct SpectralM2L{R,D}
     tables::Vector{Vector{Complex{R}}}
+    tr::Vector{Vector{R}}
+    ti::Vector{Vector{R}}
     nc::Int
     p::Int
     embed::Vector{Int}
     pin_row::Vector{R}       # length multipole_length, or empty
     src_col::Vector{R}       # length nc·N, or empty
+end
+function SpectralM2L{R,D}(tables::Vector{Vector{Complex{R}}}, nc::Int, p::Int, embed::Vector{Int},
+                          pin_row::Vector{R}, src_col::Vector{R}) where {R,D}
+    return SpectralM2L{R,D}(tables, [real.(t) for t in tables], [imag.(t) for t in tables], nc, p, embed, pin_row, src_col)
+end
+
+# Frequency blocks of the level-wise path: a block's data for a box is 2B·ncp reals,
+# and a thread's working set over its pairs is that times the boxes it touches, so
+# the block shrinks with the number of columns per box (nc components × np parts)
+# to keep the working set in cache: the largest power of two up to 64/ncp (at least
+# 8) that divides (2p)^D, so that the blocked layout is exactly the size of the spectra.
+function _block_size(nfreq::Int, ncp::Int)
+    B = 64
+    while B > 8 && B * ncp > 64
+        B >>= 1
+    end
+    while nfreq % B != 0
+        B >>= 1
+    end
+    return B
 end
 Base.size(op::SpectralM2L) = (op.nc * length(op.embed) + (isempty(op.pin_row) ? 0 : 1),
                               op.nc * length(op.embed) + (isempty(op.src_col) ? 0 : 1))
@@ -151,21 +174,92 @@ end
 
 # Workspace of the level-wise path: spectra of all boxes of a level, one complex
 # (2p)^D lattice per (component, part), and the in-place FFT plans.
+# The Hadamard stage runs in a frequency-blocked layout, `(2B, nc·np·nboxes, nblocks)`
+# reals with the real parts of a block's B frequencies followed by the imaginary
+# parts: a block's data for every box is contiguous and small enough to stay in
+# cache while all pairs of the level are processed, the inner loop is a plain real
+# multiply-add over B entries, and blocks are independent, so threads own disjoint
+# blocks with no synchronisation. `Sb` is `Û`'s memory and `Ub` is `Σ̂`'s: each
+# transpose writes into the buffer whose contents are no longer needed.
 struct SpectralWorkspace{R,D,P1,P2}
     Σ̂::Array{Complex{R},3}        # nfreq × (nc·np) × nboxes
     Û::Array{Complex{R},3}
+    Sb::Array{R,3}                # blocked spectra of the sources (aliases Û)
+    Ub::Array{R,3}                # blocked accumulated spectra of the targets (aliases Σ̂)
+    B::Int
     fwd::P1
     bwd::P2
 end
 function SpectralWorkspace(::Type{R}, ::Val{D}, p::Int, ncp::Int, nboxes::Int) where {R,D}
     n = 2p
     nfreq = n^D
+    B = _block_size(nfreq, ncp)
     Σ̂ = zeros(Complex{R}, nfreq, ncp, nboxes)
     Û = zeros(Complex{R}, nfreq, ncp, nboxes)
+    bdims = (2B, ncp * nboxes, nfreq ÷ B)
+    Sb = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Û)), bdims)
+    Ub = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Σ̂)), bdims)
     dims = (ntuple(_ -> n, Val(D))..., ncp, nboxes)
     fwd = plan_fft!(reshape(Σ̂, dims), 1:D)
     bwd = plan_bfft!(reshape(Û, dims), 1:D)
-    return SpectralWorkspace{R,D,typeof(fwd),typeof(bwd)}(Σ̂, Û, fwd, bwd)
+    return SpectralWorkspace{R,D,typeof(fwd),typeof(bwd)}(Σ̂, Û, Sb, Ub, B, fwd, bwd)
+end
+
+# One block of one pair for all component pairs at once, on linear indices:
+# Ub[a] += Σ_b T_ab ⊙ Sb[b] for a, b in 1:nc, where column a of the target starts at
+# ut + (a-1)·stride (real parts of the B entries, then imaginary parts), column b of
+# the source at us + (b-1)·stride, and the tables' parts are the separate vectors
+# tr[(a-1)nc+b], ti[...] read at tt+q. Generated per nc so that the component loops
+# unroll into one vectorised pass: each source column is loaded once and each
+# target column updated once per block (`ivdep`: iteration q touches only entry q
+# of every stream).
+@generated function _hadamard_block!(Ub::Array{R,3}, ut::Int, Sb::Array{R,3}, us::Int,
+                                     tr::Vector{Vector{R}}, ti::Vector{Vector{R}}, tt::Int,
+                                     B::Int, stride::Int, ::Val{nc}) where {R,nc}
+    n2 = nc * nc
+    quote
+        Base.Cartesian.@nexprs $n2 i -> (tr_i = tr[i]; ti_i = ti[i])
+        @inbounds @simd ivdep for q in 1:B
+            Base.Cartesian.@nexprs $nc b -> (sr_b = Sb[us + (b - 1) * stride + q]; si_b = Sb[us + (b - 1) * stride + B + q])
+            Base.Cartesian.@nexprs $nc a -> begin
+                ar = zero(R)
+                ai = zero(R)
+                Base.Cartesian.@nexprs $nc b -> begin
+                    ar += tr_{(a - 1) * $nc + b}[tt + q] * sr_b - ti_{(a - 1) * $nc + b}[tt + q] * si_b
+                    ai += tr_{(a - 1) * $nc + b}[tt + q] * si_b + ti_{(a - 1) * $nc + b}[tt + q] * sr_b
+                end
+                Ub[ut + (a - 1) * stride + q] += ar
+                Ub[ut + (a - 1) * stride + B + q] += ai
+            end
+        end
+        return nothing
+    end
+end
+
+# spectra (nfreq × ncols) -> blocked real layout, and back
+function _to_blocked!(Sb::Array{R,3}, Z::AbstractMatrix{Complex{R}}, B::Int) where {R}
+    nb = size(Sb, 3)
+    ncols = size(Z, 2)
+    Threads.@threads :dynamic for blk in 1:nb
+        q0 = (blk - 1) * B
+        @inbounds for c in 1:ncols, q in 1:B
+            z = Z[q0 + q, c]
+            Sb[q, c, blk] = real(z)
+            Sb[B + q, c, blk] = imag(z)
+        end
+    end
+    return Sb
+end
+function _from_blocked!(Z::AbstractMatrix{Complex{R}}, Ub::Array{R,3}, B::Int) where {R}
+    nb = size(Ub, 3)
+    ncols = size(Z, 2)
+    Threads.@threads :dynamic for blk in 1:nb
+        q0 = (blk - 1) * B
+        @inbounds for c in 1:ncols, q in 1:B
+            Z[q0 + q, c] = Complex(Ub[q, c, blk], Ub[B + q, c, blk])
+        end
+    end
+    return Z
 end
 
 """
@@ -177,6 +271,10 @@ targets' spectra, transform back, extract, and add the dense Stokes corrections.
 """
 function spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::AbstractMatrix{S}, il::InteractionList,
                              off::Int, ws::SpectralWorkspace{R,D}, α, N::Int, nc::Int) where {S,R,D}
+    return _spectral_m2l_level!(pL, ops, Mp, il, off, ws, α, N, Val(nc))
+end
+function _spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::AbstractMatrix{S}, il::InteractionList,
+                              off::Int, ws::SpectralWorkspace{R,D}, α, N::Int, NC::Val{nc}) where {S,R,D,nc}
     np = _nparts(S)
     embed = ops.extra.embed
     nl = size(pL, 2)
@@ -194,27 +292,45 @@ function spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstra
     end
     dims = (ntuple(_ -> 2 * ops.extra.p, Val(D))..., nc * np, nl)
     ws.fwd * reshape(Σ̂, dims)
-    # 2. Hadamard products over the pairs, offset by offset (targets are unique per offset)
-    fill!(Û, zero(Complex{R}))
+    # 2. Hadamard products in the blocked layout: every pair of the level per block,
+    #    threads over blocks (Sb aliases Û, Ub aliases Σ̂; see SpectralWorkspace)
+    B = ws.B
+    ncp = nc * np
+    Sb, Ub = ws.Sb, ws.Ub
+    _to_blocked!(Sb, reshape(Σ̂, nfreq, ncp * nl), B)
+    ncols = ncp * nl
+    Threads.@threads :dynamic for blk in 1:size(Ub, 3)
+        @inbounds begin
+            cbase = (blk - 1) * ncols * 2B          # linear offset of this block's columns
+            for i in cbase + 1:cbase + ncols * 2B
+                Ub[i] = zero(R)
+            end
+            tbase = (blk - 1) * B
+            # targets in Morton order, each with all its pairs: the target's block stays in
+            # cache across its pairs and neighbouring targets share sources
+            for q in eachindex(il.torder)
+                t = (il.torder[q] - off - 1) * ncp
+                for kp in il.tptr[q]:il.tptr[q+1]-1
+                    s = (il.tsrc[kp] - off - 1) * ncp
+                    op = ops.M2L[il.tfar[kp]]
+                    for k in 1:np
+                        _hadamard_block!(Ub, cbase + (t + k - 1) * 2B, Sb, cbase + (s + k - 1) * 2B,
+                                         op.tr, op.ti, tbase, B, np * 2B, NC)
+                    end
+                end
+            end
+        end
+    end
+    _from_blocked!(reshape(Û, nfreq, ncp * nl), Ub, B)
+    # dense corrections per pair: the pinned pressure and the point-source column
+    # (targets are unique within an offset)
     for f in eachindex(ops.M2L)
         pr = pair_range(il, f)
-        isempty(pr) && continue
         op = ops.M2L[f]
+        (isempty(pr) || (isempty(op.pin_row) && isempty(op.src_col))) && continue
         Threads.@threads :dynamic for idx in pr
             @inbounds begin
                 t = il.tgt[idx] - off
-                s = il.src[idx] - off
-                for k in 1:np, a in 1:nc
-                    ua = view(Û, :, (a - 1) * np + k, t)
-                    for b in 1:nc
-                        tab = op.tables[(a - 1) * nc + b]
-                        sb = view(Σ̂, :, (b - 1) * np + k, s)
-                        @simd for q in 1:nfreq
-                            ua[q] += tab[q] * sb[q]
-                        end
-                    end
-                end
-                # dense corrections: the pinned pressure and the point-source column
                 if !isempty(op.pin_row)
                     acc = zero(S)
                     for j in eachindex(op.pin_row)

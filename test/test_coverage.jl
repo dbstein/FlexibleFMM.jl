@@ -2,7 +2,7 @@
 # target leaf) pair is covered exactly once, either by the near field or by exactly
 # one V-list interaction between an ancestor-or-self of each.
 using FlexibleFMM: Tree, nnodes, has_children, children, npairs, pair_range,
-    far_offsets, m2l_table_index
+    far_offsets, m2l_table_index, morton_key
 
 function ancestors_or_self(tree, i)
     out = Int[]
@@ -70,6 +70,16 @@ function check_coverage(tree)
         end
     end
     @test all(npairs(tree.ilists[l]) == 0 for l in 1:min(2, length(tree.ilists)))
+    # the by-target grouping lists the same pairs, each target once, in Morton order
+    pairs_t = Set((il.torder[q], il.tsrc[k]) for il in tree.ilists for q in eachindex(il.torder) for k in il.tptr[q]:il.tptr[q+1]-1)
+    @test pairs_t == pairs
+    @test sum(length(il.tsrc) for il in tree.ilists) == total
+    for (l, il) in enumerate(tree.ilists)
+        @test allunique(il.torder)
+        @test all(tree.cell[il.tsrc[k]] - tree.cell[il.torder[q]] == far[il.tfar[k]]
+                  for q in eachindex(il.torder) for k in il.tptr[q]:il.tptr[q+1]-1)
+        @test issorted(morton_key.(tree.cell[il.torder], min(l - 1, 64 ÷ D)))
+    end
     return nothing
 end
 

@@ -91,7 +91,9 @@ the same least-squares weight on every level.
 In 3D the cube method needs its large surface finer than its small one (`pc = 2p`,
 the default) for the Stokes singularities: with equal lattices the stresslet and
 doublet translations were wrong by order one at `p = 8`; `docs/kifmm.md` has the
-mechanism and the measured accuracy per singularity.
+mechanism, the measured accuracy per singularity, the cost of the Stokes
+translations (the 3D hot spot) and why `ppl ≈ 200` is the place to start for fibre
+and surface distributions.
 
 The black-box method interpolates the stokeslet, so a singularity must be a
 differential operator in the source applied to the stokeslet: stokeslets (values of

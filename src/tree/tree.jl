@@ -18,12 +18,21 @@
 
 M2L pairs of one level in CSR form by far offset: the pairs at far offset `f` (see
 `far_offsets`) are `tgt[offset_ptr[f]:offset_ptr[f+1]-1]` and `src[...]`. A target
-appears at most once per offset.
+appears at most once per offset. The same pairs grouped by target, with the targets
+in Morton order of their cells: target `torder[q]` has the sources
+`tsrc[tptr[q]:tptr[q+1]-1]` at far offsets `tfar[...]`. The dense translation
+batches by offset; the spectral one walks targets in Morton order so that a
+target's spectrum stays in cache across its pairs and neighbouring targets reuse
+their sources.
 """
 struct InteractionList
     offset_ptr::Vector{Int}
     tgt::Vector{Int}
     src::Vector{Int}
+    torder::Vector{Int}
+    tptr::Vector{Int}
+    tsrc::Vector{Int}
+    tfar::Vector{Int}
 end
 npairs(il::InteractionList) = length(il.tgt)
 @inline pair_range(il::InteractionList, f::Int) = il.offset_ptr[f]:(il.offset_ptr[f+1] - 1)

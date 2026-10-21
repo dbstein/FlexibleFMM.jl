@@ -122,3 +122,17 @@ end
 """
 point_dimension(::AbstractVector{<:SVector{D}}) where {D} = D
 point_dimension(X::AbstractMatrix) = size(X, 1)
+
+"""
+    morton_key(cell, nbits) -> UInt64
+
+Interleaved bits of the lattice coordinates (`nbits` each): sorting cells by it
+puts spatial neighbours close together.
+"""
+function morton_key(cell::SVector{D,Int}, nbits::Int) where {D}
+    key = UInt64(0)
+    for b in 0:nbits-1, k in 1:D
+        key |= UInt64((cell[k] >> b) & 1) << (D * b + k - 1)
+    end
+    return key
+end
