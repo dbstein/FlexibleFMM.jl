@@ -24,6 +24,7 @@ include("fmm.jl")
 include("operators/cubeki.jl")
 include("evaluate.jl")
 include("stokes_api.jl")
+include("device.jl")
 
 export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest, Stokeslet2D, pressure_kernel, homogeneity
 export Laplace3D, Helmholtz3D, Yukawa3D, Stokeslet3D
@@ -35,5 +36,6 @@ export Tree, locate, locate!, square_bbox
 export KernelIndependent, CubeKernelIndependent, SquareKernelIndependent, BlackBox, OperatorCache
 export FMM, FMMState, build_expansions, build_expansions!
 export evaluate, evaluate!, evaluate_at_sources, evaluate_at_sources!
+export DeviceEvaluator, device_state
 
 end
