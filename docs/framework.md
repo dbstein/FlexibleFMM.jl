@@ -1,0 +1,97 @@
+# The operator framework
+
+One driver (`src/fmm.jl`, `src/evaluate.jl`) runs any expansion scheme that provides
+five operations per box width:
+
+| operation | signature | meaning |
+|---|---|---|
+| `s2m!` | `(col, m, ops, xs, τs, c)` | sources of a childless node → its *partial* multipole |
+| `M2M` | `Nexp × 4·Nexp` matrix | stacked children multipoles → parent partial multipole |
+| `M2L[f]` | `Nexp × Nexp` matrix per far offset | source multipole at offset `f` → target partial local |
+| `L2L` | `4·Nexp × Nexp` matrix | parent local → stacked children partial locals |
+| `l2t` | `(m, ops, L, xrel)` | local column → potential at a point |
+
+plus two per-level transforms, `partial_to_multipole!` and `partial_to_local!`,
+that turn the accumulated partial expansions of a whole level into actual
+expansions. For the kernel-independent method the partials are check potentials and
+the transforms are pseudo-inverses; for the black-box method they are the identity.
+A method also states its `expansion_length`, its `operator_eltype`, and the kernel
+to use in the near field.
+
+Because the tree makes every translation a same-width one, `level_operators(m, w)`
+builds everything for width `w` once and an `OperatorCache` keyed by the integer
+exponent `e` (width `ldexp(W0, e)`) shares it between levels and between FMM
+instances; root boxes are snapped to such widths (`fit_box!`).
+
+## The passes
+
+Expansions are stored one column per node, `Matrix{S}(Nexp, nnodes)`, so the
+sibling-group reshape of a level block to `(4·Nexp, ngroups)` is free and BLAS
+applies `M2M`/`L2L` to a whole level in one GEMM.
+
+Upward, levels `L..3`: zero the partial block of the level; `s2m!` for every
+childless node with sources (threaded over contiguous chunks of those nodes); one
+GEMM `M2M · reshape(children block)` assigned to the group parents; then the
+method's transform. Downward, levels `3..L`: one GEMM `L2L · (parents gathered by
+group)` assigned to the level block; then, for each far offset with pairs, gather
+the source columns, one GEMM with `M2L[f]`, scatter-add into the targets (a target
+appears at most once per offset, so this is conflict-free); then the transform.
+Levels 1 and 2 carry nothing. The pair lists are stored in CSR form per level and
+offset (`InteractionList`), so each GEMM touches only the multipoles actually used
+(the Python applied each operator to every multipole of the level and gathered
+afterwards).
+
+Evaluation: targets are located (`locate`), counting-sorted by leaf so that
+consecutive targets reuse the same local expansion and source ranges, and processed
+in contiguous chunks of that order; each target gets `l2t` of its leaf's local plus
+the direct sum over its leaf's colleagues' source ranges. `evaluate_at_sources` uses
+the tree's own `point_node` map and excludes the source itself by index.
+
+Why batched GEMMs with gather/scatter are still the right structure in Julia: at
+`Nexp ≈ 50` a level's M2L is thousands of `50 × 50` products, which as one GEMM per
+offset runs at BLAS-3 speed; and the same layout (flat arrays, index lists,
+per-item bodies for `s2m!`/`l2t`/near field) is what a GPU port needs.
+
+## Element types and differentiability
+
+Operators are built in `Float64` or `ComplexF64` from the kernel. Expansions use
+`promote_type(operator eltype, kernel output on the position eltype, density eltype)`,
+so complex densities with a real kernel, or `ForwardDiff.Dual` positions, propagate
+through `mul!` (generic fallback for `Complex{Dual}`), the factored pseudo-inverse
+and the per-point bodies. The tree holds only indices and box geometry; positions
+and densities are passed to `build_expansions!` and `evaluate`, which for a fixed
+tree makes the FMM a pure generic function of `(sources, τ, targets)`. One dual
+partial gives a directional derivative, e.g. a shape derivative of a layer
+potential in a given velocity field, at about twice the cost; see
+`test/test_forwarddiff.jl`. This is valid for infinitesimal perturbations (a source
+that leaves its box also leaves its equivalent surface).
+
+## Threading
+
+`Threads.@threads :dynamic` over contiguous chunks of leaves (`s2m!`) and of
+leaf-sorted targets (`evaluate`), with the threaded body in its own function:
+a variable that is assigned both inside a `@threads` body and in the enclosing
+function is one shared boxed variable, and tasks race on it. Every output element is
+written by exactly one task in a fixed order, so results are bitwise independent of
+the Julia thread count.
+
+## Where extensions plug in
+
+- **Another expansion scheme** (e.g. analytic Laplace/Helmholtz translations): a new
+  `AbstractMethod` with the five operations and identity transforms; nothing in the
+  driver changes (this is how `BlackBox` was added after `KernelIndependent`).
+- **Dipole sources / gradient targets**: new `s2m!`/near-field variants (KI: a
+  different kernel; BB: the differentiated Chebyshev basis) and `l2t` variants; the
+  translations are untouched. Vector densities belong in the density eltype
+  (`SVector`), not in side arrays.
+- **Vector kernels** (Stokes, Brinkman): `SMatrix`-valued kernels with `SVector`
+  densities; kernel matrices need explicit block assembly, and the method owns the
+  expansion length (Stokes needs a pressure/null-space slot).
+- **3D**: the tree, lists and driver are generic in `D`; see `docs/tree.md`.
+- **GPU** (KernelAbstractions): flat node arrays and CSR pair lists are already in
+  place; `s2m!`, `l2t` and `evaluate_target` are allocation-free per-item bodies.
+- **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
+  is the FMM with sources and targets swapped and the kernel transposed; position
+  pullbacks need the gradient kernel in `s2m!`/`l2t`/near field.
+- **Local (near-field-only) evaluators**: a different refinement rule in the builder
+  and a label filter in the near-field body.

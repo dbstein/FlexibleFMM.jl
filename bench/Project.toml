@@ -1,0 +1,5 @@
+[deps]
+Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-5a37-4447-a30f-21d4a1a5a3bd"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
