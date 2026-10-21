@@ -69,4 +69,7 @@ include("operator_checks.jl")
     @testset "device evaluation" begin
         include("test_device.jl")
     end
+    @testset "symmetry classes" begin
+        include("test_symmetry.jl")
+    end
 end
