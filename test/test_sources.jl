@@ -11,7 +11,7 @@ mrd(a, b) = maximum(norm.(a .- b)) / maximum(norm.(b))     # scalars or SVectors
 const SDual = ForwardDiff.Dual{:src,Float64,1}
 sdual(x, v) = SDual(x, ForwardDiff.Partials((v,)))
 spartial(x) = ForwardDiff.partials(x, 1)
-T_exact(j, x) = cos(j * acos(x))
+Tcheb(j, x) = cos(j * acos(x))
 
 # kernels without hand-written derivatives, to exercise the generic ForwardDiff path
 struct GenericLaplace <: AbstractKernel end
@@ -107,7 +107,7 @@ end
         for x in (2rand(rng, 3) .- 1)
             tv, dv = chebyshev_values_derivatives(Val(p), x)
             @test tv ≈ chebyshev_values(Val(p), x)
-            @test dv ≈ [ForwardDiff.derivative(y -> T_exact(j, y), x) for j in 0:p-1] atol = 1e-12
+            @test dv ≈ [ForwardDiff.derivative(y -> Tcheb(j, y), x) for j in 0:p-1] atol = 1e-12
         end
         c = randn(rng, p^2)
         for q in (2rand(rng, 2) .- 1, 2rand(rng, 2) .- 1)
@@ -124,11 +124,11 @@ end
     @test @allocated(chebyshev_values_derivatives(Val(8), 0.3)) == 0
 end
 
-methods_for(K) = (("KI nequiv=60", KernelIndependent(K; nequiv=60)), ("BB p=14", BlackBox(K; p=14)))
+source_methods(K) = (("KI nequiv=60", KernelIndependent(K; nequiv=60)), ("BB p=14", BlackBox(K; p=14)))
 
 @testset "dipoles, gradients and tuples end to end, $(kname), $(mname)" for
         (kname, K) in (("Laplace", Laplace2D()), ("Helmholtz k=5", Helmholtz2D(5.0))),
-        (mname, m) in methods_for(K)
+        (mname, m) in source_methods(K)
     N = 5000
     pts = mixed_points(rng, N)
     τ = randn(rng, N)
@@ -156,7 +156,7 @@ methods_for(K) = (("KI nequiv=60", KernelIndependent(K; nequiv=60)), ("BB p=14",
     @test mrd(evaluate_at_sources(f, st_t; output=Gradient()), direct_self(K, pts, comb; output=Gradient())) < 1e-5
 end
 
-@testset "position derivatives: dual positions versus dipole FMM, $(mname)" for (mname, m) in methods_for(Laplace2D())
+@testset "position derivatives: dual positions versus dipole FMM, $(mname)" for (mname, m) in source_methods(Laplace2D())
     N = 3000
     pts = mixed_points(rng, N)
     τ = randn(rng, N)
