@@ -26,6 +26,11 @@ end
 
 order(::BlackBox{K,P}) where {K,P} = P
 dimension(::BlackBox) = 2
+function operators_type(m::BlackBox)
+    T = operator_eltype(m)
+    R = floattype(m.kernel)
+    return LevelOperators{T,R,BBExtras{R},M2LOperator{T}}
+end
 expansion_length(m::BlackBox{K,P}) where {K,P} = ncomp(m.kernel, Val(2)) * P * P
 near_kernel(m::BlackBox) = m.kernel
 function operator_eltype(m::BlackBox)
@@ -77,11 +82,11 @@ function level_operators(m::BlackBox{K,P}, w::Real) where {K,P}
         push!(blocksL, A)
         push!(blocksM, Matrix(transpose(A)))
     end
-    M2L = [M2LOperator(VIc * kernel_matrix(Kf, phys .+ Ref(SVector{2,R}(off) * w), phys) * transpose(VIc))
+    T = operator_eltype(m)
+    M2L = [M2LOperator(Matrix{T}(VIc * kernel_matrix(Kf, phys .+ Ref(SVector{2,R}(off) * w), phys) * transpose(VIc)))
            for off in far_offsets(Val(2))]
-    T = eltype(M2L[1].A)
     return LevelOperators(w, Matrix{T}(reduce(hcat, blocksM)), Matrix{T}(reduce(vcat, blocksL)), M2L,
-                          BBExtras{R}(phys, 2 / w, VI))
+                          BBExtras{R}(phys, 2 / w, VI))::operators_type(m)
 end
 
 # M2M and L2L are pure interpolation (width independent); only the M2L scales.
@@ -90,8 +95,8 @@ function rescale(ref::LevelOperators{T,R,BBExtras{R}}, m::BlackBox, w::Real) whe
     a === nothing && throw(ArgumentError("rescale needs a homogeneous kernel"))
     λ = R(w) / ref.width
     e = ref.extra
-    return LevelOperators{T,R,BBExtras{R}}(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
-                                           ref.m2l_scale * λ^a, BBExtras{R}(e.nodes .* λ, e.scale / λ, e.VI))
+    return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
+                       ref.m2l_scale * λ^a, BBExtras{R}(e.nodes .* λ, e.scale / λ, e.VI))
 end
 
 """

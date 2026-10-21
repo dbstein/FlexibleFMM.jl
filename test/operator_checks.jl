@@ -85,7 +85,9 @@ function check_l2l(rng, m, w, tol; density=random_density)
     f = findfirst(==(off), far_offsets(Val(2)))
     xs = box_points(rng, SVector{2,Float64}(off) * w, w, 40)
     τ = density(rng, m.kernel, 40)
-    Lp = local_of(m, ops, ops.M2L[f].A * multipole_of(m, ops, xs, τ, SVector{2,Float64}(off) * w))
+    pLp = zeros(operator_eltype(m), pll)
+    apply!(pLp, ops.M2L[f], multipole_of(m, ops, xs, τ, SVector{2,Float64}(off) * w))
+    Lp = local_of(m, ops, pLp)
     pLc = ops.L2L * Lp
     centers = [(SVector{2,Float64}(δ) .- 0.5) * (w / 2) for δ in child_offsets(Val(2))]
     for k in 1:4
@@ -98,7 +100,7 @@ function check_l2l(rng, m, w, tol; density=random_density)
     return nothing
 end
 
-function check_allocation_free(rng, m, w)
+function check_allocation_free(rng, m, w; m2l=true)
     ops = level_operators(m, w)
     S = operator_eltype(m)
     xs = box_points(rng, P2(0, 0), w, 30); τ = random_density(rng, m.kernel, 30)
@@ -109,9 +111,11 @@ function check_allocation_free(rng, m, w)
     L = zeros(S, local_length(m))
     l2t(m, ops, L, x)
     @test @allocated(l2t(m, ops, L, x)) == 0
-    Mv = zeros(S, multipole_length(m))
-    out = zeros(S, partial_local_length(m))
-    apply!(out, ops.M2L[1], Mv)
-    @test @allocated(apply!(out, ops.M2L[1], Mv)) == 0
+    if m2l
+        Mv = zeros(S, multipole_length(m))
+        out = zeros(S, partial_local_length(m))
+        apply!(out, ops.M2L[1], Mv)
+        @test @allocated(apply!(out, ops.M2L[1], Mv)) == 0
+    end
     return nothing
 end

@@ -15,7 +15,7 @@ An empty operator cache for `method`. Pass the same cache to several `FMM`s to r
 their translation operators.
 """
 function OperatorCache(method::AbstractMethod)
-    O = Base.promote_op(level_operators, typeof(method), Float64)
+    O = operators_type(method)
     return OperatorCache{typeof(method),O}(method, NaN, Dict{Int,O}())
 end
 has_base_width(c::OperatorCache) = !isnan(c.W0)

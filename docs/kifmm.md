@@ -66,3 +66,44 @@ report or regularise the degeneracies below.
   first at `k·w ≈ 3.40`. Expansions live on levels ≥ 3 (widths ≤ `W/4`), so `k·W ≤
   12` on the root box is safe; the test suite uses `k·W ≤ 10` and reports a scan of
   larger wavenumbers. Yukawa has no such zeros.
+
+## Grid-boundary surfaces and spectral translation (`GridKernelIndependent{D}`)
+
+The second surface family, after Ying, Biros and Zorin, works in any dimension: the
+small surface is the set of boundary points of the `p`-per-edge lattice on the
+square or cube of half-width `(1+d)·r` (`4p − 4` points in 2D, `6p² − 12p + 8` in 3D),
+the large one the same lattice on `(3 − 2d)·r`, with `r` the box half-width. The
+margin `d` keeps corner sources off the equivalent surface and the large surface
+inside the nearest far box (whose face is at `3r`). Everything above (factored
+solves, Stokes pin and source, rescaling) is shared with the circle method.
+
+What the lattice buys is the translation. The source's small surface and the
+target's small surface are lattices with the same spacing `h`, so the kernel between
+them depends only on the lattice index difference and the box offset, `κ_o(m) =
+K(o·w, h·m)`, `m ∈ [−(p−1), p−1]^D`: the check potentials are a discrete convolution
+of the density, embedded in the `p^D` lattice, with that table, which zero padding to
+`(2p)^D` turns into a circular convolution computed by FFTs. Per level this is one
+forward transform per source box, one Hadamard product with the offset's table per
+interaction pair, and one inverse transform per target box, instead of a dense
+`N × N` product per pair: `(2p)^D` flops per pair instead of `N²`, which in 3D is 13×
+fewer at `p = 6` and 20× at `p = 8` and is the natural GPU formulation. The
+driver's level-wise hook `m2l_level!` carries this; vector kernels use one table per
+component pair; the Stokes pressure row and point-source column are small dense
+corrections applied per pair. Dual-number and complex expansions are split into
+their real or complex parts for the transforms (they are linear), so the path stays
+differentiable.
+
+Measured worst case (corner source, facing targets, Laplace) at equal point counts:
+
+| points | 20 | 28 | 36 | 44 |
+|---|---|---|---|---|
+| grid, d = 0.05 | 2e-5 | 2e-6 | 5e-8 | 5e-9 |
+| grid, d = 0.1 | 6e-5 | 4e-6 | 1e-7 | 1e-8 |
+| grid, d = 0.2 | 2e-4 | 1e-5 | 4e-7 | 2e-8 |
+| circles | 3e-4 | 1e-5 | 2e-7 | 2e-8 |
+
+Squares with a small margin are two to four times more accurate than circles at the
+same number of points. For the Stokes kernel the random-box translation error at
+`p = 8, 12, 16, 20` is `8e-5, 4e-8, 9e-11, 3e-12` (stresslet sources about ten
+times worse), about a hundred times the Laplace error at the same `p`, the same as
+with circles.

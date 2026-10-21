@@ -9,9 +9,11 @@
                   bbox=nothing, precision=Float64, cache=nothing)
 
 Tree and operators for a fixed geometry (`sources` and, if given, `targets`, both
-vectors of `SVector{2}` or `2 × N` matrices). `method` is `:ki` (kernel independent,
-`nequiv` points per circle; supports every singularity and the pressure) or `:bb`
-(black box, order `p`; stokeslets, doublets and rotlets, velocity only).
+vectors of `SVector` or `D × N` matrices). `method` is `:ki` (kernel independent on
+circles, `nequiv` points; 2D), `:grid` (kernel independent on grid-boundary
+surfaces, `p` points per edge and margin `d`, spectral translations; any
+dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
+velocity only; 2D). The first two support every singularity and the pressure.
 """
 mutable struct StokesFMMPlan{D,F<:FMM,T}
     fmm::F
@@ -33,13 +35,14 @@ _value(x::ForwardDiff.Dual) = ForwardDiff.value(x)
 _values(pts::AbstractVector{<:SVector{D}}) where {D} = [SVector{D}(map(_value, p)) for p in pts]
 
 function StokesFMMPlan(sources; targets=nothing, method::Symbol=:ki, nequiv::Integer=60,
-                       p::Integer=12, ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64,
-                       cache=nothing)
+                       p::Integer=12, d::Real=0.1, ppl::Integer=50, bbox=nothing,
+                       precision::Type{<:AbstractFloat}=Float64, cache=nothing)
     D = point_dimension(sources)
     K = stokeslet_kernel(Val(D), precision)
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
+        method === :grid ? GridKernelIndependent{D}(K; p=p, d=d) :
         method === :bb ? BlackBox(K; p=p) :
-        throw(ArgumentError("method must be :ki or :bb"))
+        throw(ArgumentError("method must be :ki, :grid or :bb"))
     pts = _values(as_svectors(Val(D), sources))
     tgts = targets === nothing ? nothing : _values(as_svectors(Val(D), targets))
     if bbox === nothing

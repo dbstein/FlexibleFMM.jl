@@ -63,6 +63,7 @@ struct FMMState{S,P<:SVector,Tτ}
     partial::Matrix{S}     # partial expansions of the level being processed
     work1::Matrix{S}
     work2::Matrix{S}
+    scratch::Dict{Any,Any} # method-specific workspaces (spectral translation)
 end
 
 function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,Tp,Tτ}
@@ -75,7 +76,36 @@ function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,
     return FMMState{S,SVector{D,Tp},Tτ}(zeros(S, multipole_length(m), n), zeros(S, local_length(m), n),
                                        Vector{SVector{D,Tp}}(undef, N), Vector{Tτ}(undef, N),
                                        Matrix{S}(undef, rows, nc), Matrix{S}(undef, rows, nc),
-                                       Matrix{S}(undef, rows, nc))
+                                       Matrix{S}(undef, rows, nc), Dict{Any,Any}())
+end
+
+# Default level-wise M2L: per far offset, gather the source multipoles, one GEMM,
+# scatter-add into the targets (a target appears at most once per offset).
+function m2l_level!(pL::AbstractMatrix, m::AbstractMethod, ops::LevelOperators, Mp::AbstractMatrix,
+                    il::InteractionList, off::Int, state::FMMState)
+    Nm = size(Mp, 1)
+    pll = size(pL, 1)
+    for fidx in 1:length(ops.M2L)
+        pr = pair_range(il, fidx)
+        n = length(pr)
+        n == 0 && continue
+        G = view(state.work1, 1:Nm, 1:n)
+        Rw = view(state.work2, 1:pll, 1:n)
+        @inbounds for (q, idx) in enumerate(pr)
+            s = il.src[idx]
+            for k in 1:Nm
+                G[k, q] = Mp[k, s]
+            end
+        end
+        apply!(Rw, ops.M2L[fidx], G, ops.m2l_scale)
+        @inbounds for (q, idx) in enumerate(pr)
+            t = il.tgt[idx] - off
+            for k in 1:pll
+                pL[k, t] += Rw[k, q]
+            end
+        end
+    end
+    return pL
 end
 
 # contiguous chunks of 1:n for threading
@@ -167,29 +197,8 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         else
             fill!(pL, zero(S))
         end
-        # M2L, one far offset at a time
-        il = tree.ilists[l]
-        off = first(lr) - 1
-        for fidx in 1:length(ops.M2L)
-            pr = pair_range(il, fidx)
-            n = length(pr)
-            n == 0 && continue
-            G = view(state.work1, 1:Nm, 1:n)
-            R = view(state.work2, 1:pll, 1:n)
-            @inbounds for (q, idx) in enumerate(pr)
-                s = il.src[idx]
-                for k in 1:Nm
-                    G[k, q] = Mp[k, s]
-                end
-            end
-            apply!(R, ops.M2L[fidx], G, ops.m2l_scale)
-            @inbounds for (q, idx) in enumerate(pr)
-                t = il.tgt[idx] - off
-                for k in 1:pll
-                    pL[k, t] += R[k, q]
-                end
-            end
-        end
+        # M2L for the whole level
+        m2l_level!(pL, m, ops, Mp, tree.ilists[l], first(lr) - 1, state)
         partial_to_local!(view(Lc, :, lr), m, ops, pL, state.work2)
     end
     return state

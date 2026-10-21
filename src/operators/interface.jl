@@ -33,24 +33,36 @@ end
 Base.size(op::M2LOperator) = size(op.A)
 
 """
-    LevelOperators{T,R,X}
+    LevelOperators{T,R,X,L}
 
-The translation operators of one box width, with method-specific extras `X`. The
-matrices may be shared with other widths (homogeneous kernels); the per-width
-factors `m2m_scale`, `l2l_scale`, `m2l_scale` are applied when they are used.
+The translation operators of one box width, with method-specific extras `X` and
+M2L operators of type `L` (dense `M2LOperator` or spectral). The matrices may be
+shared with other widths (homogeneous kernels); the per-width factors `m2m_scale`,
+`l2l_scale`, `m2l_scale` are applied when they are used.
 """
-struct LevelOperators{T,R<:Real,X}
+struct LevelOperators{T,R<:Real,X,L}
     width::R
     M2M::Matrix{T}
     L2L::Matrix{T}
-    M2L::Vector{M2LOperator{T}}
+    M2L::Vector{L}
     m2m_scale::R
     l2l_scale::R
     m2l_scale::R
     extra::X
 end
-LevelOperators(width::R, M2M::Matrix{T}, L2L::Matrix{T}, M2L::Vector{M2LOperator{T}}, extra::X) where {T,R,X} =
-    LevelOperators{T,R,X}(width, M2M, L2L, M2L, one(R), one(R), one(R), extra)
+LevelOperators(width::R, M2M::Matrix{T}, L2L::Matrix{T}, M2L::Vector{L}, extra::X) where {T,R,X,L} =
+    LevelOperators{T,R,X,L}(width, M2M, L2L, M2L, one(R), one(R), one(R), extra)
+
+"""
+    m2l_level!(pL, m, ops, Mp, il, off, state)
+
+Add the far-field contributions of one level to its partial locals `pL` (columns
+local to the level, global node `i` at column `i - off`), from the multipoles `Mp`
+and the level's interaction list. The default applies each far offset's operator to
+the gathered sources (gather → GEMM → scatter-add); a method may override it with a
+level-wise scheme (the spectral translation of the grid method).
+"""
+function m2l_level! end
 
 """
     rescale(ops, m, w) -> LevelOperators
@@ -66,6 +78,14 @@ function rescale end
 Spatial dimension the method's operators are built for.
 """
 function dimension end
+
+"""
+    operators_type(m)
+
+The concrete `LevelOperators` type `level_operators(m, w)` returns; used to type the
+operator cache without relying on inference.
+"""
+function operators_type end
 
 """
     supports_density(m, T), supports_output(m, out)

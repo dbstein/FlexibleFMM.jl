@@ -8,6 +8,9 @@ near-field interaction a same-level colleague sum. Two schemes are provided:
 - `KernelIndependent` — the kernel-independent FMM of Ying, Biros and Zorin
   (equivalent densities on circles); needs only kernel evaluations, for kernels that
   are Green's functions of an elliptic PDE (Laplace, Helmholtz, Yukawa, …).
+- `GridKernelIndependent{D}` — the same method on grid-boundary surfaces (squares or
+  cubes, `p` points per edge, margin `d`), with translation operators applied by FFT;
+  written for any dimension.
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
 

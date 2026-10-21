@@ -52,6 +52,12 @@ offset (`InteractionList`), so each GEMM touches only the multipoles actually us
 (the Python applied each operator to every multipole of the level and gathered
 afterwards).
 
+The M2L step of the downward pass goes through a level-wise hook, `m2l_level!(pL,
+m, ops, Mp, il, off, state)`, whose default is the gather/GEMM/scatter above; the
+grid-surface kernel-independent method overrides it with the FFT scheme described
+in `docs/kifmm.md`, which is the shape a GPU wants (one transform per box, one
+Hadamard product per pair). Method-specific workspaces live in `state.scratch`.
+
 Evaluation: targets are located (`locate`), counting-sorted by leaf so that
 consecutive targets reuse the same local expansion and source ranges, and processed
 in contiguous chunks of that order; each target gets `l2t` of its leaf's local plus
