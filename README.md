@@ -81,6 +81,9 @@ stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
   determinism, allocation and ForwardDiff tests
 - `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl N=1000000`
   (kernel, method, distribution and `ppl` options in its header)
+- `bench/compare/` — timing and accuracy against the Flatiron libraries through
+  FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies
+  (`julia --project=bench/compare -t auto bench/compare/compare.jl dim=3 N=100000`)
 
 This is a port of the Python/numba `flexmm` package; the design decisions that
 differ from it are recorded in the docs.
