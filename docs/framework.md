@@ -80,8 +80,8 @@ kernels must not write bare `π`-containing literals. Two of the special functio
 `besselj0`/`bessely0`, Yukawa converts the result back.
 
 In single precision the kernel-independent check maps can only resolve modes down to
-about `50·eps ≈ 6e-6`, i.e. some 20 harmonics, so the default `pinv_rtol` truncates
-there and `nequiv ≈ 40` is the useful maximum; expect about 1e-5 relative accuracy
+about `50·eps ≈ 6e-6`, so the default `pinv_rtol` truncates there; the error floor
+of about 1e-5 is reached by `nequiv ≈ 24–32` and more points add nothing
 (`test/test_float32.jl`).
 
 ## Threading

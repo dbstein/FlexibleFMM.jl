@@ -14,6 +14,12 @@
 # the check→equivalent solves are done once per level on the whole level block with
 # the truncated SVD of the check matrices, applied in factored form V·Σ⁻¹·Uᴴ.
 #
+# Accuracy: the worst-case translation error (a source at a box corner, a target at
+# the facing corner of the nearest interaction-list box) is about (r1/r2)^N = 0.547^N
+# with N points per circle: 7e-5, 1e-8, 2e-12 at N = 16, 32, 48, measured; global
+# relative errors on uniform data are one to two orders smaller (6e-9 at N = 32).
+# Rounding limits the floor to about 1e-14, reached near N = 64.
+#
 # Why factored and not as one matrix: mode m of the check map decays like
 # (r1/r2)^|m| = 0.547^|m|, so the pseudo-inverse has norm 1/σ_min ≈ 0.547^(-N/2)
 # (1e13 at N = 100). A dense pseudo-inverse, or one folded into M2M/M2L/L2L, is formed

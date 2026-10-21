@@ -1,7 +1,7 @@
-# Kernel-independent operators in isolation. With N points per circle the expansion
-# carries N/2 harmonics and the nearest interaction-list box sees the source circle
-# at radius ratio r1/r2 = 0.547, so the error floor is about 0.547^(N/2):
-# 1.4e-8 at N = 60, 8e-14 at N = 100.
+# Kernel-independent operators in isolation. The worst-case translation error is
+# about (r1/r2)^N = 0.547^N with N points per circle (1e-8 at N = 32, 2e-12 at
+# N = 48, rounding floor ~1e-14 near N = 64); the random-box tests below sit well
+# inside that, so the tolerances are loose.
 using FlexibleFMM: KernelIndependent, level_operators, pinv_rtol, FactoredPinv, apply!,
     conditioning, OperatorCache, fit_box!, get_operators!, has_base_width
 

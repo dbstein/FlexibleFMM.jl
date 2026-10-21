@@ -51,11 +51,12 @@ root box.
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
 points gives a single-precision tree, operators, expansions and output.
 
-Accuracy: the kernel-independent method with `nequiv` points is accurate to about
-`0.547^(nequiv/2)` (`1e-8` at 60, `1e-13` at 100); see `docs/kifmm.md` for why,
-and for the two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz
-resonances at `k·w ≈ 3.40, 5.42, …`). The black-box method converges geometrically
-in `p`.
+Accuracy: the kernel-independent method with `nequiv` points per circle has a
+worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 48,
+rounding floor `~1e-14` near 64) and global relative errors one to two orders
+smaller (10 digits at 32 points on uniform data); see `docs/kifmm.md`, also for the
+two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz resonances
+at `k·w ≈ 3.40, 5.42, …`). The black-box method converges geometrically in `p`.
 
 ## Layout
 

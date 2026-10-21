@@ -22,11 +22,24 @@ test kernel `G − c∂₁G` exercises this.
 
 ## Accuracy
 
-Mode `m` of the small→large check map carries the factor `(r1/r2)^|m| = 0.547^|m|`
-and `Nequiv` real points represent `Nequiv/2` harmonics, so the error of a
-translation to the nearest box is about `0.547^(Nequiv/2)`: `1.4e-8` at 60 points,
-`8e-14` at 100 (measured in `test/test_operators_kifmm.jl`). Beyond ~100 points the
-check matrices are singular to working precision and more points add nothing.
+Measured worst case (a unit charge at a corner of the source box, targets on the
+facing edge and corner of the nearest interaction-list box, error relative to that
+field):
+
+| points | 16 | 24 | 32 | 48 | 64 |
+|---|---|---|---|---|---|
+| worst case | 7e-5 | 3e-7 | 1e-8 | 2e-12 | 6e-15 |
+| `0.547^N` | 6e-5 | 5e-7 | 4e-9 | 3e-13 | 4e-17 |
+| global ℓ∞, uniform, 10⁵ points | 2e-5 | 2e-7 | 6e-9 | 6e-12 | 3e-14 |
+| global ℓ², same | 1e-5 | 8e-8 | 1e-9 | 8e-13 | 1e-14 |
+
+So the error decays like `(r1/r2)^N = 0.547^N` with `N` the number of points per
+circle, about 2.6 digits per 10 points, until rounding stops it near 1e-14 at
+`N ≈ 64`; global relative errors on realistic distributions (normalised by the
+maximum of the whole potential) are one to two orders smaller than the single
+worst interaction. This matches the ten digits at 32 points reported by Ying, Biros
+and Zorin. Beyond ~100 points the check matrices are singular to working precision
+and more points add nothing.
 
 ## The check-to-equivalent solve must stay factored
 
