@@ -60,7 +60,7 @@ Add the far-field contributions of one level to its partial locals `pL` (columns
 local to the level, global node `i` at column `i - off`), from the multipoles `Mp`
 and the level's interaction list. The default applies each far offset's operator to
 the gathered sources (gather → GEMM → scatter-add); a method may override it with a
-level-wise scheme (the spectral translation of the grid method).
+level-wise scheme (the spectral translation of the square/cube method).
 """
 function m2l_level! end
 

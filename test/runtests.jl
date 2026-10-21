@@ -60,7 +60,7 @@ include("operator_checks.jl")
     @testset "homogeneous kernels" begin
         include("test_homogeneous.jl")
     end
-    @testset "grid surfaces and spectral translation" begin
-        include("test_gridki.jl")
+    @testset "square surfaces and spectral translation" begin
+        include("test_cubeki.jl")
     end
 end

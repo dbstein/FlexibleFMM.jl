@@ -8,9 +8,9 @@ near-field interaction a same-level colleague sum. Three schemes are provided:
 - `KernelIndependent` — the kernel-independent FMM of Ying, Biros and Zorin
   (equivalent densities on circles); needs only kernel evaluations, for kernels that
   are Green's functions of an elliptic PDE (Laplace, Helmholtz, Yukawa, …).
-- `GridKernelIndependent{D}` — the same method on grid-boundary surfaces (squares or
-  cubes, `p` points per edge, margin `d`), with translation operators applied by FFT;
-  written for any dimension.
+- `CubeKernelIndependent{D}` (`SquareKernelIndependent` in 2D) — the same method on the
+  surface of a square or cube (`p` points per edge, margin `d`), with translation
+  operators applied by FFT; written for any dimension.
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
 
@@ -27,7 +27,7 @@ sources = [SVector(rand(), rand()) for _ in 1:100_000]
 targets = [SVector(rand(), rand()) for _ in 1:50_000]
 
 K  = Laplace2D()
-m  = KernelIndependent(K; nequiv=60)   # or GridKernelIndependent{2}(K; p=12), BlackBox(K; p=12)
+m  = KernelIndependent(K; nequiv=60)   # or SquareKernelIndependent(K; p=12), BlackBox(K; p=12)
 f  = FMM(m, sources; ppl=50, bbox=(SVector(0.0, 0.0), 1.0))
 st = build_expansions(f, sources, τ)                # multipoles and locals
 u_sources = evaluate_at_sources(f, st)              # Σ_{j≠i} K(s_j, s_i) τ_j

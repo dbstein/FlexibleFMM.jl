@@ -67,7 +67,7 @@ report or regularise the degeneracies below.
   12` on the root box is safe; the test suite uses `k·W ≤ 10` and reports a scan of
   larger wavenumbers. Yukawa has no such zeros.
 
-## Grid-boundary surfaces and spectral translation (`GridKernelIndependent{D}`)
+## Square and cube surfaces and spectral translation (`CubeKernelIndependent{D}`)
 
 The second surface family, after Ying, Biros and Zorin, works in any dimension: the
 small surface is the set of boundary points of the `p`-per-edge lattice on the
@@ -102,9 +102,9 @@ Measured worst case (corner source, facing targets, Laplace) at equal point coun
 
 | points | 20 | 28 | 36 | 44 |
 |---|---|---|---|---|
-| grid, d = 0.05 | 2e-5 | 2e-6 | 5e-8 | 5e-9 |
-| grid, d = 0.1 | 6e-5 | 4e-6 | 1e-7 | 1e-8 |
-| grid, d = 0.2 | 2e-4 | 1e-5 | 4e-7 | 2e-8 |
+| square, d = 0.05 | 2e-5 | 2e-6 | 5e-8 | 5e-9 |
+| square, d = 0.1 | 6e-5 | 4e-6 | 1e-7 | 1e-8 |
+| square, d = 0.2 | 2e-4 | 1e-5 | 4e-7 | 2e-8 |
 | circles | 3e-4 | 1e-5 | 2e-7 | 2e-8 |
 
 Squares with a small margin are two to four times more accurate than circles at the

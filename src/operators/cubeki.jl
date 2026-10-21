@@ -1,4 +1,4 @@
-# Kernel-independent FMM with grid-boundary surfaces (any dimension), after Ying,
+# Kernel-independent FMM on square/cube surfaces (any dimension), after Ying,
 # Biros & Zorin: the surfaces are the boundary points of p-per-edge lattices on the
 # squares/cubes of half-width (1+d)·r (small: upward equivalent and downward check)
 # and (3-2d)·r (large: upward check and downward equivalent), r the box half-width.
@@ -7,7 +7,7 @@
 # surfaces of all boxes are lattices of the same spacing, the M2L operators are
 # spectral (src/operators/spectral_m2l.jl); M2M, L2L and the check solves are dense.
 
-struct GridKernelIndependent{D,K} <: AbstractKernelIndependent
+struct CubeKernelIndependent{D,K} <: AbstractKernelIndependent
     kernel::K
     p::Int
     d::Float64
@@ -15,37 +15,40 @@ struct GridKernelIndependent{D,K} <: AbstractKernelIndependent
 end
 
 """
-    GridKernelIndependent{D}(kernel; p=8, d=0.1, pinv_rtol=50·eps(floattype(kernel)))
+    CubeKernelIndependent{D}(kernel; p=8, d=0.1, pinv_rtol=50·eps(floattype(kernel)))
+    SquareKernelIndependent(kernel; p=8, d=0.1, pinv_rtol=50·eps(floattype(kernel)))
 
-The kernel-independent method on grid-boundary surfaces in `D` dimensions with `p`
-points per edge (`p^D - (p-2)^D` surface points: `4p - 4` in 2D, `6p² - 12p + 8` in
-3D) and margin `d`. Translation operators are applied by FFT.
+The kernel-independent method on the surface of a square (`D = 2`) or cube (`D = 3`)
+with `p` points per edge (`p^D - (p-2)^D` surface points: `4p - 4` in 2D,
+`6p² - 12p + 8` in 3D) and margin `d`. Translation operators are applied by FFT.
+`SquareKernelIndependent` is `CubeKernelIndependent{2}`.
 """
-function GridKernelIndependent{D}(kernel; p::Integer=8, d::Real=0.1,
+function CubeKernelIndependent{D}(kernel; p::Integer=8, d::Real=0.1,
                                   pinv_rtol::Real=50 * eps(floattype(kernel))) where {D}
     p >= 2 || throw(ArgumentError("p must be at least 2"))
     0 < d < 1 || throw(ArgumentError("d must lie in (0, 1)"))
-    return GridKernelIndependent{D,typeof(kernel)}(kernel, Int(p), Float64(d), Float64(pinv_rtol))
+    return CubeKernelIndependent{D,typeof(kernel)}(kernel, Int(p), Float64(d), Float64(pinv_rtol))
 end
+const SquareKernelIndependent = CubeKernelIndependent{2}
 
-dimension(::GridKernelIndependent{D}) where {D} = D
-nsurface(m::GridKernelIndependent{D}) where {D} = m.p^D - (m.p - 2)^D
-function operators_type(m::GridKernelIndependent{D}) where {D}
+dimension(::CubeKernelIndependent{D}) where {D} = D
+nsurface(m::CubeKernelIndependent{D}) where {D} = m.p^D - (m.p - 2)^D
+function operators_type(m::CubeKernelIndependent{D}) where {D}
     T = operator_eltype(m)
     R = floattype(m.kernel)
     return LevelOperators{T,R,KIExtras{T,R,D},SpectralM2L{R,D}}
 end
 
-function level_operators(m::GridKernelIndependent{D}, w::Real) where {D}
+function level_operators(m::CubeKernelIndependent{D}, w::Real) where {D}
     K = m.kernel
     R = floattype(K)
     w = R(w)
     p = m.p
     a_small = R(1 + m.d) * w / 2
     a_large = R(3 - 2m.d) * w / 2
-    small, embed = grid_boundary_points(Val(D), p, a_small)
-    large, _ = grid_boundary_points(Val(D), p, a_large)
-    child_small, _ = grid_boundary_points(Val(D), p, a_small / 2)
+    small, embed = cube_boundary_points(Val(D), p, a_small)
+    large, _ = cube_boundary_points(Val(D), p, a_large)
+    child_small, _ = cube_boundary_points(Val(D), p, a_small / 2)
     P_up, P_down, M2M, L2L = _ki_dense_operators(m, w, small, large, child_small)
     T = operator_eltype(m)
     h = 2a_small / (p - 1)
@@ -64,7 +67,7 @@ function level_operators(m::GridKernelIndependent{D}, w::Real) where {D}
     return LevelOperators(w, Matrix{T}(M2M), Matrix{T}(L2L), M2L, extra)::operators_type(m)
 end
 
-function m2l_level!(pL::AbstractMatrix, m::GridKernelIndependent{D}, ops::LevelOperators, Mp::AbstractMatrix{S},
+function m2l_level!(pL::AbstractMatrix, m::CubeKernelIndependent{D}, ops::LevelOperators, Mp::AbstractMatrix{S},
                     il::InteractionList, off::Int, state::FMMState) where {D,S}
     nc = ncomp(m.kernel, Val(D))
     N = length(ops.extra.small)

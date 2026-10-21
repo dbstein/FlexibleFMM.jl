@@ -2,12 +2,12 @@
 # default one) with key=value arguments, all optional:
 #
 #     julia --project=. -t auto bench/bench.jl N=1000000 ppl=25,50,100 \
-#           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,grid:12,bb:12
+#           dist=uniform,circle kernel=laplace,helmholtz:10,yukawa:5 method=ki:60,square:12,bb:12
 #
 # Defaults: N=100000, ppl=50, dist=uniform,circle,clustered, kernel=laplace,helmholtz:10,
 # method=ki:60,bb:12. Kernels: laplace, helmholtz:k, yukawa:k, stokes (stokeslets with
-# random vector densities). Methods: ki:nequiv (kernel-independent on circles), grid:p or
-# grid:p:d (kernel-independent on squares, p points per edge, margin d, FFT translations),
+# random vector densities). Methods: ki:nequiv (kernel-independent on circles), square:p or
+# square:p:d (kernel-independent on squares, p points per edge, margin d, FFT translations),
 # bb:p (black-box).
 #
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
@@ -52,12 +52,12 @@ function parse_method(s, K)
     parts = split(s, ":")
     name, rest = parts[1], parts[2]
     name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))
-    if name == "grid"
+    if name == "square"
         d = length(parts) > 2 ? parse(Float64, parts[3]) : 0.1
-        return ("Grid$rest d=$d", GridKernelIndependent{2}(K; p=parse(Int, rest), d=d))
+        return ("Square$rest d=$d", SquareKernelIndependent(K; p=parse(Int, rest), d=d))
     end
     name == "bb" && return ("BB$rest", BlackBox(K; p=parse(Int, rest)))
-    error("unknown method $s (ki:nequiv, grid:p[:d], bb:p)")
+    error("unknown method $s (ki:nequiv, square:p[:d], bb:p)")
 end
 density(rng, K, N) = randn(rng, N)
 density(rng, ::Stokeslet2D, N) = [P2(randn(rng), randn(rng)) for _ in 1:N]

@@ -10,9 +10,9 @@
 
 Tree and operators for a fixed geometry (`sources` and, if given, `targets`, both
 vectors of `SVector` or `D × N` matrices). `method` is `:ki` (kernel independent on
-circles, `nequiv` points; 2D), `:grid` (kernel independent on grid-boundary
-surfaces, `p` points per edge and margin `d`, spectral translations; any
-dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
+circles, `nequiv` points; 2D), `:square` or `:cube` (synonyms: kernel independent
+on square/cube surfaces, `p` points per edge and margin `d`, spectral translations;
+any dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
 velocity only; 2D). The first two support every singularity and the pressure.
 """
 mutable struct StokesFMMPlan{D,F<:FMM,T}
@@ -40,9 +40,9 @@ function StokesFMMPlan(sources; targets=nothing, method::Symbol=:ki, nequiv::Int
     D = point_dimension(sources)
     K = stokeslet_kernel(Val(D), precision)
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
-        method === :grid ? GridKernelIndependent{D}(K; p=p, d=d) :
+        method === :square || method === :cube ? CubeKernelIndependent{D}(K; p=p, d=d) :
         method === :bb ? BlackBox(K; p=p) :
-        throw(ArgumentError("method must be :ki, :grid or :bb"))
+        throw(ArgumentError("method must be :ki, :square (= :cube) or :bb"))
     pts = _values(as_svectors(Val(D), sources))
     tgts = targets === nothing ? nothing : _values(as_svectors(Val(D), targets))
     if bbox === nothing

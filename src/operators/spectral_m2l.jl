@@ -1,4 +1,4 @@
-# Spectral (FFT) translation operators for grid-boundary surfaces.
+# Spectral (FFT) translation operators for square/cube surfaces.
 #
 # When the upward-equivalent points of the source box and the downward-check points
 # of the target box lie on lattices with the same spacing h (p points per edge), the
@@ -22,7 +22,7 @@
 
 Translation operator of one far offset: FFTs of the kernel tables (`nc²` of them,
 index `(a-1)·nc + b`, each of length `(2p)^D`), the lattice data (`p`, the linear
-index of each surface point in the padded grid), and the dense pressure row and
+index of each surface point in the padded lattice), and the dense pressure row and
 point-source column of the Stokes augmentations (empty otherwise).
 """
 struct SpectralM2L{R,D}
@@ -61,12 +61,12 @@ end
 end
 
 """
-    grid_boundary_points(::Val{D}, p, a) -> (points, embed)
+    cube_boundary_points(::Val{D}, p, a) -> (points, embed)
 
 The boundary points of the `p^D` lattice spanning `[-a, a]^D` (coordinate 1 fastest)
-and the linear index of each in the zero-padded `(2p)^D` grid.
+and the linear index of each in the zero-padded `(2p)^D` lattice.
 """
-function grid_boundary_points(::Val{D}, p::Int, a::R) where {D,R}
+function cube_boundary_points(::Val{D}, p::Int, a::R) where {D,R}
     p >= 2 || throw(ArgumentError("p must be at least 2"))
     coords = [-a + 2a * R(i - 1) / (p - 1) for i in 1:p]
     pts = SVector{D,R}[]
@@ -150,7 +150,7 @@ function apply!(out::AbstractVector{S}, op::SpectralM2L{R,D}, x::AbstractVector,
 end
 
 # Workspace of the level-wise path: spectra of all boxes of a level, one complex
-# (2p)^D grid per (component, part), and the in-place FFT plans.
+# (2p)^D lattice per (component, part), and the in-place FFT plans.
 struct SpectralWorkspace{R,D,P1,P2}
     Σ̂::Array{Complex{R},3}        # nfreq × (nc·np) × nboxes
     Û::Array{Complex{R},3}
@@ -182,7 +182,7 @@ function spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstra
     nl = size(pL, 2)
     nfreq = size(ws.Σ̂, 1)
     Σ̂, Û = ws.Σ̂, ws.Û
-    # 1. embed the multipoles, one grid per (component, part)
+    # 1. embed the multipoles, one lattice per (component, part)
     fill!(Σ̂, zero(Complex{R}))
     Threads.@threads :dynamic for j in 1:nl
         @inbounds for b in 1:nc, k in 1:np

@@ -1,4 +1,4 @@
-# Kernel-independent FMM machinery shared by the circle (2D) and grid-boundary (any
+# Kernel-independent FMM machinery shared by the circle (2D) and square/cube (any
 # D) surface families. A box carries an inner "small" surface (upward equivalent,
 # downward check) and an outer "large" one (upward check, downward equivalent).
 # Translation operators map densities to check data; the check→equivalent solves
@@ -63,9 +63,9 @@ end
     KIExtras{T,R,D}
 
 Surfaces (relative to the box center), the two pseudo-inverses, their shared-matrix
-scale factor, and, for grid surfaces, the lattice data the spectral translation
+scale factor, and, for square/cube surfaces, the lattice data the spectral translation
 needs (`p` points per edge, spacing `h` of the small surface, and the linear index
-of each small-surface point in the padded `(2p)^D` grid).
+of each small-surface point in the padded `(2p)^D` lattice).
 """
 struct KIExtras{T,R,D}
     small::Vector{SVector{D,R}}

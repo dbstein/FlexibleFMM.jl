@@ -54,7 +54,7 @@ afterwards).
 
 The M2L step of the downward pass goes through a level-wise hook, `m2l_level!(pL,
 m, ops, Mp, il, off, state)`, whose default is the gather/GEMM/scatter above; the
-grid-surface kernel-independent method overrides it with the FFT scheme described
+square/cube kernel-independent method overrides it with the FFT scheme described
 in `docs/kifmm.md`, which is the shape a GPU wants (one transform per box, one
 Hadamard product per pair). Method-specific workspaces live in `state.scratch`.
 
@@ -152,7 +152,7 @@ and `target_field` methods for the outputs it should support.
   `source_field`/`target_field` hooks; kernel matrices are assembled block-wise, the
   method owns the expansion length (the Stokes augmentations), and `Pressure()` is an
   output type evaluating the pressure kernel against the equivalent density.
-- **3D**: the tree, lists, driver, `GridKernelIndependent{3}` (cube surfaces) and the
+- **3D**: the tree, lists, driver, `CubeKernelIndependent{3}` and the
   spectral translations are generic in `D`; `KernelIndependent` (circles) and
   `BlackBox` are 2D. What is missing is the 3D kernels and their tests; see
   `docs/tree.md`.
