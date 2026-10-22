@@ -16,8 +16,8 @@ source ranges, levels and centers of the nodes, the method's far-field data (the
 large surface of every level for the kernel-independent methods, `DeviceSurface`;
 the scale per level and the recurrence tables for the harmonic methods,
 `DeviceHarmonic`), the leaf and the output slot of every source, and the kernel,
-with the `FastMath` policy if `fast` (the device's reciprocal square root; Metal,
-Float32). `to` maps a CPU array to the device's array type.
+with the `FastMath` policy if `fast` (relaxed arithmetic, `fastmath(K)`; the
+kernel's own policy otherwise). `to` maps a CPU array to the device's array type.
 """
 struct DeviceEvaluator{D,K,AI,VI,VP,F}
     kernel::K

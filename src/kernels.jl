@@ -126,23 +126,50 @@ end
     PreciseMath, FastMath, fastmath(K)
 
 The arithmetic policy of the Laplace and Stokes 3D kernels' radial part, a type
-parameter: `PreciseMath` (`1/sqrt(r²)`, the default) or `FastMath`, the device's
-fast reciprocal square root, which the Metal extension defines for `Float32` and
-its dual numbers on the device only (a `FastMath` kernel has no CPU method).
-`fastmath(K)` switches a kernel's policy; `DeviceEvaluator`/`DevicePlan` take
-`fast=true` to evaluate with it (1.15–1.3× on the device evaluation measured,
-deviations of 1e-7).
+parameter: `PreciseMath` (`1/sqrt(r²)`, the default) or `FastMath`, the kernel
+bodies under `@fastmath` (`@policied`: contraction, reciprocals, the approximate
+root; 1.2× on the CPU near field and 1.22–1.25× on the Metal evaluation measured
+in Float32, deviations of 2–4e-7). `fastmath(K)` switches a kernel's
+policy: `FMM(m, …)` with a method built on `fastmath(K)` relaxes everything the
+kernel enters (the near field, the kernel-independent operators and check
+potentials, the harmonic S2M and L2T); `DeviceEvaluator`/`DevicePlan` take
+`fast=true` to relax the device evaluation alone.
 """
 abstract type MathPolicy end
 struct PreciseMath <: MathPolicy end
 struct FastMath <: MathPolicy end
 @inline _rinv(::PreciseMath, r2) = 1 / _sqrt(r2)
+@inline _rinv(::FastMath, r2) = @fastmath 1 / sqrt(r2)
 # the square root without Julia's domain check: `r2` is a sum of squares, and the
 # check's throw inside the near-field loop keeps LLVM from vectorising the loop
 # over the sources on x86 (the same instruction, `llvm.sqrt`, otherwise)
 @inline _sqrt(x::Union{Float32,Float64}) = Base.sqrt_llvm(x)
 @inline _sqrt(x) = sqrt(x)
 fastmath(K) = K
+
+"""
+    @policied function f(K::Kernel{T,P}, args...) where {T} body end
+
+Defines the method for both math policies from one body: as written for
+`K::Kernel{T,PreciseMath}`, and under `@fastmath` for `K::Kernel{T,FastMath}`
+(the relaxed arithmetic of the opt-in policy: contraction, reciprocals, the
+approximate root; the calls inside the body, `_rinv` among them, keep their own
+definitions). The signature names the policy `P` wherever the kernel type appears.
+"""
+macro policied(def)
+    inner = def
+    while inner isa Expr && inner.head === :macrocall           # through @inline
+        inner = inner.args[end]
+    end
+    inner isa Expr && inner.head === :function || error("@policied expects a function definition")
+    swap(ex, P) = ex === :P ? P : ex isa Expr ? Expr(ex.head, (swap(a, P) for a in ex.args)...) : ex
+    rebuild(outer, newinner) = outer === inner ? newinner :
+        Expr(outer.head, outer.args[1:end-1]..., rebuild(outer.args[end], newinner))
+    sig, body = inner.args[1], inner.args[2]
+    precise = rebuild(def, Expr(:function, swap(sig, :PreciseMath), body))
+    fast = rebuild(def, Expr(:function, swap(sig, :FastMath), Expr(:block, :(@fastmath $body))))
+    return esc(Expr(:block, precise, fast))
+end
 
 """
     Laplace3D(T=Float64)
@@ -156,13 +183,15 @@ Laplace3D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace3D{T,PreciseMath}
 fastmath(K::Laplace3D{T}) where {T} = Laplace3D{T,FastMath}(K.c)
 floattype(::Laplace3D{T}) where {T} = T
 @inline policy(::Laplace3D{T,P}) where {T,P} = P()
-@inline (K::Laplace3D)(s::SVector{3}, t::SVector{3}) = K.c * _rinv(policy(K), _sqnorm(t - s))
-@inline function gradient_t(K::Laplace3D, s::SVector{3}, t::SVector{3})
+@policied @inline function (K::Laplace3D{T,P})(s::SVector{3}, t::SVector{3}) where {T}
+    return K.c * _rinv(policy(K), _sqnorm(t - s))
+end
+@policied @inline function gradient_t(K::Laplace3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     return (-K.c * ir^3) * d
 end
-@inline function hessian_t(K::Laplace3D, s::SVector{3}, t::SVector{3})
+@policied @inline function hessian_t(K::Laplace3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     a = K.c * ir^3
@@ -228,14 +257,14 @@ Stokeslet3D(::Type{T}=Float64) where {T<:AbstractFloat} = Stokeslet3D{T,PreciseM
 fastmath(K::Stokeslet3D{T}) where {T} = Stokeslet3D{T,FastMath}(K.c)
 floattype(::Stokeslet3D{T}) where {T} = T
 @inline policy(::Stokeslet3D{T,P}) where {T,P} = P()
-@inline function (K::Stokeslet3D)(s::SVector{3}, t::SVector{3})
+@policied @inline function (K::Stokeslet3D{T,P})(s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     a = K.c * ir
     b = a * ir * ir
     return a * one(SMatrix{3,3,typeof(a)}) + b * (d * transpose(d))
 end
-@inline function pressure_kernel(K::Stokeslet3D, s::SVector{3}, t::SVector{3})
+@policied @inline function pressure_kernel(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     return (2 * K.c * ir^3) * d
@@ -312,8 +341,7 @@ constant-folds in the per-point bodies.
 ncomp(K, ::Val{D}) where {D} = _ncomp(kernel_eltype(K, SVector{D,floattype(K)}, SVector{D,floattype(K)}))
 _ncomp(::Type{<:Number}) = 1
 _ncomp(::Type{<:SMatrix{m}}) where {m} = m
-# stated outright for the kernels with a math policy: a FastMath kernel has no host
-# method to infer from
+# stated outright for the kernels with a math policy (no need to call them)
 ncomp(::Laplace3D, ::Val{3}) = 1
 ncomp(::Stokeslet3D, ::Val{3}) = 3
 

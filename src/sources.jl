@@ -207,24 +207,24 @@ end
 #   Rotlet(ω):        u = c ω×d/r³ = ½ ε_{jkl} ω_j ∂_{s_k} G_{il},   p = 0
 const Rotlet3 = Rotlet{<:SVector{3}}
 
-@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3})
+@policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, f::SVector{3}) where {T}
     d = t - s                                   # c(f/r + d(d·f)/r³) directly: 12 products
     ir = _rinv(policy(K), _sqnorm(d))           # against 27 through the 3 × 3 matrix (1.15× on the near field)
     a = K.c * ir
     return a * f + (a * ir * ir * _dot(d, f)) * d
 end
-@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3})
+@policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     return (-(6 * K.c) * _dot(d, τ.f) * _dot(d, τ.ν) * ir^5) * d
 end
-@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Doublet{3})
+@policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Doublet{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     g = τ.g
     return (K.c * ir^3) * (g - (3 * _dot(d, g) * ir * ir) * d)
 end
-@inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Rotlet3)
+@policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Rotlet3) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     return (K.c * ir^3) * cross(τ.ω, d)
@@ -232,21 +232,21 @@ end
 
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Pressure) =
     sum(pressure_kernel(K, s, t) .* f)
-@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Pressure)
+@policied @inline function target_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Pressure) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     ir3 = ir^3
-    return (4 * K.c) * (sum(τ.f .* τ.ν) * ir3 - 3 * sum(d .* τ.f) * sum(d .* τ.ν) * ir3 * ir * ir)
+    return (4 * K.c) * (_dot(τ.f, τ.ν) * ir3 - 3 * _dot(d, τ.f) * _dot(d, τ.ν) * ir3 * ir * ir)
 end
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Doublet{3},Rotlet3}, ::Pressure) =
     zero(promote_type(eltype(s), eltype(t), density_scalar(typeof(τ)), typeof(K.c)))
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Tuple, out::Pressure) =
     _sum_targets(K, s, t, out, τ...)
 
-@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Gradient)
+@policied @inline function target_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Gradient) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    df = sum(d .* f)
+    df = _dot(d, f)
     b = K.c * ir^3
     I3 = one(SMatrix{3,3,typeof(b)})
     return b * (df * I3 + d * transpose(f) - f * transpose(d)) - (3b * df * ir * ir) * (d * transpose(d))

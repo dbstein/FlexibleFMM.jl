@@ -299,7 +299,7 @@ operators per far offset, or, for `tol > 0`, their truncated SVDs with the singu
 values below `tol·σ₁` dropped (`LowRankM2L`; the translation error then floors near
 `tol`). Charges and dipoles; potential and gradient outputs.
 """
-function SphericalHarmonics(kernel::Laplace3D{T,PreciseMath}; p::Integer=16, tol::Real=0) where {T}
+function SphericalHarmonics(kernel::Laplace3D{T}; p::Integer=16, tol::Real=0) where {T}
     p >= 1 || throw(ArgumentError("p must be at least 1"))
     0 <= tol < 1 || throw(ArgumentError("tol must lie in [0, 1)"))
     L = tol > 0 ? LowRankM2L{T} : M2LOperator{T}

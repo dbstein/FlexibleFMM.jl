@@ -67,6 +67,9 @@ root box.
 
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
 points gives a single-precision tree, operators, expansions and output.
+`fastmath(K)` switches the 3D Laplace and Stokes kernels to relaxed arithmetic
+(the `FastMath` policy: 1.2× on the near field, deviations of 3e-7 in Float32;
+`fast=true` in the bench scripts and on the device plan).
 
 With OpenBLAS (Julia's default) start Julia with `OPENBLAS_THREAD_TIMEOUT=4` in the
 environment: after each BLAS call its helper threads otherwise spin for ~0.1 s

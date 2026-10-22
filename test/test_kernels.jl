@@ -107,3 +107,43 @@ end
     fb = FMM(BlackBox(plain; p=6), pts; ppl=20, bbox=(SVector(0.0, 0.0), 1.0))
     @test fb isa FMM
 end
+
+@testset "the FastMath policy: relaxed bodies agree with the precise ones" begin
+    using FlexibleFMM: gradient_t, hessian_t, pressure_kernel, source_field, target_field, policy, PreciseMath, FastMath
+    close(a, b, tol) = maximum(abs.(a .- b)) <= tol * max(maximum(abs.(b)), floatmin(eltype(b)))
+    for (T, tol) in ((Float64, 1e-12), (Float32, 1f-5))
+        KL, KS = Laplace3D(T), Stokeslet3D(T)
+        @test policy(KL) === PreciseMath() && policy(fastmath(KL)) === FastMath()
+        @test fastmath(fastmath(KS)) === fastmath(KS) && fastmath(Laplace2D()) === Laplace2D()
+        fL, fS = fastmath(KL), fastmath(KS)
+        for _ in 1:20
+            s, t = rand(rng, SVector{3,T}), rand(rng, SVector{3,T})
+            f, ν, g = randn(rng, SVector{3,T}), randn(rng, SVector{3,T}), randn(rng, SVector{3,T})
+            @test close(fL(s, t), KL(s, t), tol) && close(gradient_t(fL, s, t), gradient_t(KL, s, t), tol) &&
+                  close(hessian_t(fL, s, t), hessian_t(KL, s, t), tol)
+            @test close(fS(s, t), KS(s, t), tol) && close(pressure_kernel(fS, s, t), pressure_kernel(KS, s, t), tol)
+            for τ in (f, Stresslet(f, ν), Doublet(g), Rotlet(g))
+                @test close(source_field(fS, s, t, τ), source_field(KS, s, t, τ), tol)
+                @test close(target_field(fS, s, t, τ, Gradient()), target_field(KS, s, t, τ, Gradient()), tol)
+                τ isa Stresslet && continue
+                @test close(target_field(fS, s, t, τ, Pressure()), target_field(KS, s, t, τ, Pressure()), tol)
+            end
+            # the stresslet pressure is the difference of two terms, so the relaxed
+            # arithmetic deviates relative to the terms, not to the result (1e-4 of
+            # the result seen in Float32)
+            d = t - s; ir = 1 / norm(d)
+            terms = 4 * KS.c * (abs(dot(f, ν)) * ir^3 + 3 * abs(dot(d, f) * dot(d, ν)) * ir^5)
+            pf, pp = target_field(fS, s, t, Stresslet(f, ν), Pressure()), target_field(KS, s, t, Stresslet(f, ν), Pressure())
+            @test abs(pf - pp) <= tol * terms
+        end
+    end
+    # dual numbers (the relaxed root's derivative) and allocation
+    s, f = rand(rng, SVector{3,Float64}), randn(rng, SVector{3,Float64})
+    t = SVector(ForwardDiff.Dual(0.7, 1.0), ForwardDiff.Dual(0.1, 0.0), ForwardDiff.Dual(0.5, 0.0))
+    ud, up = source_field(fastmath(Stokeslet3D()), s, t, f), source_field(Stokeslet3D(), s, t, f)
+    @test close(ForwardDiff.value.(ud), ForwardDiff.value.(up), 1e-12) && close(ForwardDiff.partials.(ud, 1), ForwardDiff.partials.(up, 1), 1e-12)
+    alloc(K, s, t, f) = @allocated source_field(K, s, t, f)
+    tf = rand(rng, SVector{3,Float64})
+    alloc(fastmath(Stokeslet3D()), s, tf, f)
+    @test alloc(fastmath(Stokeslet3D()), s, tf, f) == 0
+end

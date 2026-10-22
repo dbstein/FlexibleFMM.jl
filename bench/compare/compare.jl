@@ -9,7 +9,9 @@
 # Defaults: dim=3, N=100000, ppl=200 (50 in 2D), dist=uniform, kernel=laplace,
 # helmholtz:3,stokes,stresslet (helmholtz:10 in 2D), method=cube:6,cube:8,cube:10
 # (ki:30,ki:60,square:12 in 2D), eps=1e-3,1e-6,1e-9 (the library's requested
-# precisions), device=cpu. The kernel, method and distribution specifications are
+# precisions), device=cpu, fast=false (true: ours with the FastMath kernel policy,
+# relaxed arithmetic; the reference and the libraries are unaffected). The kernel,
+# method and distribution specifications are
 # those of ../common.jl; the black-box method takes no stresslets. Each case runs
 # our method at every `method` and the library at every `eps` on the same points,
 # evaluation at the sources only (the usual FMM matvec; separate targets are not
@@ -54,6 +56,7 @@ precision = get(args, "precision", device == "metal" ? "float32" : "float64")
 precision in ("float32", "float64") || error("precision must be float32 or float64")
 TP = precision == "float32" ? Float32 : Float64         # our precision (the libraries run in Float64)
 nerr = parse(Int, get(args, "nerr", "2000"))
+fast = get(args, "fast", "false") == "true"                 # ours with the FastMath kernel policy
 rng = MersenneTwister(1)
 println(config_line())
 println("dim ", dim, ", N ", N, ", ppl ", ppl, device == "cpu" ? "" : ", ours on $device in $TP")
@@ -173,6 +176,7 @@ for dname in dists
         kind = kernel_kind(kspec)
         kname, K64 = parse_kernel(kspec, Val(dim), Float64)          # the reference kernel
         _, KT = parse_kernel(kspec, Val(dim), TP)                    # ours, in our precision
+        fast && (KT = fastmath(KT))
         k = occursin(":", kspec) ? parse(Float64, split(kspec, ":")[2]) : 0.0
         τ = density(rng, kind, K64, N, Val(dim))
         uex = direct_subset(K64, pts, τ, sub)
@@ -185,7 +189,7 @@ for dname in dists
             m === nothing && (println("  ($mname: not for this kernel)"); continue)
             devm = m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod} ? dev : nothing   # the device passes
             r = run_ours(m, cvt(τ), ptsT; dev=devm)
-            push!(rows, ("ours $mname ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[3], relerr(r[4][sub], uex)))
+            push!(rows, ("ours $mname$(fast ? " fast" : "") ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[3], relerr(r[4][sub], uex)))
         end
         for e in epss
             t, out = run_lib(lib_call(kind, k, e, S, τ))

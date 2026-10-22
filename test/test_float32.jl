@@ -78,3 +78,19 @@ end
     @test max_relative_diff(ForwardDiff.value.(u), ForwardDiff.value.(uref)) < 1e-4
     @test max_relative_diff(ForwardDiff.partials.(u, 1), ForwardDiff.partials.(uref, 1)) < 1e-3
 end
+
+@testset "the FastMath policy end to end, Float32" begin
+    N = 20000
+    pts = SVector{3,Float32}.(sphere_points(rng, N))
+    τ = [randn(rng, SVector{3,Float32}) for _ in 1:N]
+    box = (zero(SVector{3,Float32}), 1f0)
+    u = map((Stokeslet3D(Float32), fastmath(Stokeslet3D(Float32)))) do K
+        f = FMM(StokesHarmonics(K; p=8), pts; ppl=100, bbox=box)
+        evaluate_at_sources(f, build_expansions(f, pts, τ))
+    end
+    @test maximum(norm.(u[1] .- u[2])) / maximum(norm.(u[1])) < 1e-5   # the relaxed near field and S2M/L2T
+    τs = randn(rng, Float32, N)                                   # the cube method builds its operators with the fast kernel too
+    fc = FMM(CubeKernelIndependent{3}(fastmath(Laplace3D(Float32)); p=6), pts; ppl=100, bbox=box)
+    uc = evaluate_at_sources(fc, build_expansions(fc, pts, τs))
+    @test max_relative_diff(uc, direct_self(Laplace3D(Float32), pts, τs)) < 1e-4
+end

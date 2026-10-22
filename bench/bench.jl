@@ -24,6 +24,10 @@
 # the same device passes through KernelAbstractions' CPU backend (Float64, Julia
 # threads, no package needed): the device code path without a device.
 #
+# fast=true switches the kernel to the FastMath policy (`fastmath(K)`: the kernel
+# bodies under relaxed arithmetic, docs/framework.md), which every phase the kernel
+# enters then uses; the direct reference stays precise.
+#
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
 # is split. It trades near-field work (∝ ppl per target) against the number of boxes
 # (∝ N/ppl) and hence the translation work; the optimum depends on the machine, the
@@ -121,7 +125,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
     return nothing
 end
 
-function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores)
+function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast)
     rng = MersenneTwister(1)
     println(config_line())
     println("cores assumed for the rates: ", cores, ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
@@ -130,7 +134,10 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores)
         pts = SVector{dim,T}.(pts64)
         for ppl in ppls, kspec in kernels, mspec in methods
             kname, K = parse_kernel(kspec, Val(dim), T)
-            _, K64 = parse_kernel(kspec, Val(dim), Float64)
+            if fast
+                K = fastmath(K); kname *= " fast"
+            end
+            _, K64 = parse_kernel(kspec, Val(dim), Float64)              # the reference: precise
             mname, m = parse_method(mspec, K, Val(dim))
             m === nothing && continue                            # a method not for this kernel
             τ64 = density(rng, kernel_kind(kspec), K64, N, Val(dim))
@@ -163,4 +170,5 @@ precision in ("float32", "float64") || error("precision must be float32 or float
 T = precision == "float32" ? Float32 : Float64
 nerr = parse(Int, get(args, "nerr", "500"))
 cores = parse(Int, get(args, "cores", string(max(1, Sys.CPU_THREADS ÷ 2))))
-main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores)
+fast = get(args, "fast", "false") == "true"
+main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast)

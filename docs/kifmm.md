@@ -217,9 +217,16 @@ single-threaded BLAS calls was tried and is slower, toggling the OpenBLAS pool
 being expensive and Accelerate's own threading better, so that split is taken
 only when BLAS is started with one thread, `column_blocks` in `docs/framework.md`);
 and a reciprocal square
-root by estimate and Newton steps gains nothing in Float64 on the CPU, while on
-Metal the device's `rsqrt_fast` (the `FastMath` kernel policy, `fast=true` on the
-device plan) gains 1.3× on the Laplace and 1.15× on the Stokes device evaluation at 10⁶ targets (0.076 → 0.058 s and 0.125 → 0.108 s on the M3 Max; the matvec 0.030 and 0.079 s) with deviations of 1e-7 from the precise kernel; the Stokes kernel in isolation gains 2×. The compressed translations of
+root by estimate and Newton steps gains nothing in Float64 on the CPU, while the
+`FastMath` kernel policy (`fastmath(K)`: the 3D Laplace and Stokes bodies under
+`@fastmath`, defined for both policies from one body by `@policied`; `fast=true`
+on the device plan, `fast=true` in the bench scripts) gains 1.2× on the CPU near
+field in Float32 and 1.22–1.25× on the Metal evaluation at 10⁶ targets (0.073 →
+0.059 s Laplace, 0.113 → 0.093 s Stokes on the M3 Max) with deviations of 2–4e-7
+from the precise kernel. The first version of the policy was the device's explicit
+`rsqrt_fast` through a Metal extension, with no host method; a `@fastmath` body
+compiles to the same speed on the device (1.24× vs 1.25× Laplace, 1.15× vs 1.22×
+Stokes), so the extension is gone and the policy is one definition everywhere. The compressed translations of
 kifmm were measured on
 our operators: the far offsets see a smooth kernel, so at `p = 8` the per-offset
 ranks are 25 (Laplace) and 69 (Stokes) at `1e-8` and 9 and 34 at `1e-6`, against

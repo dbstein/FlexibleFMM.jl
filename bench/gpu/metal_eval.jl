@@ -7,7 +7,7 @@ using FlexibleFMM, Metal, StaticArrays, Random, Printf, LinearAlgebra
 using FlexibleFMM: locate
 args = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(ARGS, "="))
 N = parse(Int, get(args, "N", "100000")); NT = parse(Int, get(args, "NT", "1000000")); ppl = parse(Int, get(args, "ppl", "200"))
-fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (rsqrt_fast)
+fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (relaxed arithmetic)
 rng = MersenneTwister(1)
 const P3f = SVector{3,Float32}
 pts = [rand(rng, P3f) for _ in 1:N]; tg = [rand(rng, P3f) for _ in 1:NT]

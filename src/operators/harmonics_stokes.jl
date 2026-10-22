@@ -36,7 +36,7 @@ of degree `p` (`4(p+1)²` coefficients), with the scalar translations dense or, 
 `tol > 0`, in truncated-SVD form as for `SphericalHarmonics`. Stokeslets, stresslets
 and doublets with real densities; velocity, velocity-gradient and pressure outputs.
 """
-function StokesHarmonics(kernel::Stokeslet3D{T,PreciseMath}; p::Integer=16, tol::Real=0) where {T}
+function StokesHarmonics(kernel::Stokeslet3D{T}; p::Integer=16, tol::Real=0) where {T}
     p >= 1 || throw(ArgumentError("p must be at least 1"))
     0 <= tol < 1 || throw(ArgumentError("tol must lie in [0, 1)"))
     S = tol > 0 ? LowRankM2L{T} : M2LOperator{T}

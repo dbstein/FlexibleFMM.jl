@@ -5,7 +5,7 @@
 using FlexibleFMM, Metal, StaticArrays, Random, Printf, LinearAlgebra
 args = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(ARGS, "="))
 N = parse(Int, get(args, "N", "100000")); ppl = parse(Int, get(args, "ppl", "200"))
-fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (rsqrt_fast)
+fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (relaxed arithmetic)
 tol = parse(Float64, get(args, "tol", "0"))        # > 0: low-rank class operators
 rng = MersenneTwister(1)
 const P3f = SVector{3,Float32}
