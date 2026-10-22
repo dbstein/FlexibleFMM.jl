@@ -30,6 +30,7 @@ include("operators/harmonics_yukawa.jl")
 include("evaluate.jl")
 include("stokes_api.jl")
 include("device.jl")
+include("device_lists.jl")
 include("device_passes.jl")
 
 export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest, Stokeslet2D, pressure_kernel, homogeneity

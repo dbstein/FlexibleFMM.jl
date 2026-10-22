@@ -20,12 +20,12 @@ rng = MersenneTwister(45)
     @test FlexibleFMM.nlevels(f) >= 5
     plan = DevicePlan(f)
     ds = (sources=st.sources, τ=st.τ)
-    device_build_expansions!(plan, ds)
+    device_build_expansions!(plan, ds; sorted=true)
     @test mrd(vec(plan.multipoles), vec(st.multipoles)) < tol
     @test mrd(vec(plan.plocals), vec(st.plocals)) < tol
     @test mrd(vec(plan.locals), vec(st.locals)) < 100tol     # the downward pseudo-inverse amplifies the dense-vs-spectral difference
     u = similar(evaluate_at_sources(f, st))
-    device_matvec!(u, plan, ds)
+    device_matvec!(u, plan, ds; sorted=true)
     @test mrd(u, evaluate_at_sources(f, st)) < tol
     @test mrd(u, direct_self(K, pts, τ)) < 1e-4
 end
@@ -44,7 +44,7 @@ end
     @test !isempty(plan.M2Lb[3]) && all(size(B, 1) < size(B, 2) ÷ 2 for B in plan.M2Lb[3])   # ranks well below n
     ds = (sources=st.sources, τ=st.τ)
     u = similar(evaluate_at_sources(f, st))
-    device_matvec!(u, plan, ds)
+    device_matvec!(u, plan, ds; sorted=true)
     @test mrd(u, evaluate_at_sources(f, st)) < errtol       # the compression sits below the method's accuracy
     @test mrd(u, direct_self(K, pts, τ)) < 10errtol
 end
@@ -63,7 +63,7 @@ end
     plan = DevicePlan(f)
     @test length(plan.M2Lc[3]) == 40
     out = zeros(700)
-    device_matvec!(out, plan, (sources=st.sources, τ=st.τ))
+    device_matvec!(out, plan, (sources=st.sources, τ=st.τ); sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
     fc = FMM(SquareKernelIndependent(Laplace2D(); p=8), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
     @test length(DevicePlan(fc).M2Lc[3]) == 7
@@ -74,7 +74,7 @@ end
     sty = build_expansions(fy, pts3, τ3)
     plany = DevicePlan(fy; tol=1e-5)
     outy = zeros(3000)
-    device_matvec!(outy, plany, (sources=sty.sources, τ=sty.τ))
+    device_matvec!(outy, plany, (sources=sty.sources, τ=sty.τ); sorted=true)
     @test mrd(outy, evaluate_at_sources(fy, sty)) < 1e-4
     # complex densities with a real kernel: the plan's element type
     τc = randn(rngr, ComplexF64, 3000)
@@ -83,7 +83,7 @@ end
     planc = DevicePlan(fl; eltype=ComplexF64)
     @test eltype(planc.multipoles) == ComplexF64
     outc = zeros(ComplexF64, 3000)
-    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ))
+    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ); sorted=true)
     @test mrd(outc, evaluate_at_sources(fl, stc)) < 1e-10
     @test_throws ArgumentError DevicePlan(fl; eltype=Float32)
 end
@@ -96,13 +96,60 @@ end
     st = build_expansions(f, pts, τ)
     plan = DevicePlan(f)
     ds = (sources=st.sources, τ=st.τ)
-    device_build_expansions!(plan, ds)
+    device_build_expansions!(plan, ds; sorted=true)
     # the pseudo-inverse amplifies roundoff differences of the two paths (1e-10 relative
     # in the locals at this order); the fields agree
     out = zeros(4000)
-    device_matvec!(out, plan, ds)
+    device_matvec!(out, plan, ds; sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
     nonleaf = [i for i in 1:length(f.tree.leaf) if !f.tree.leaf[i]]
     @test all(i -> all(iszero, view(plan.locals, :, i)), nonleaf)
     @test all(l -> size(plan.Ldn[l], 2) == max(1, length(f.leaf_nodes[l])), 1:plan.nlevels)
+end
+
+@testset "the device-built lists equal the host's, and inputs in the original order" begin
+    using FlexibleFMM: class_lists, far_offsets, pair_range
+    rng = MersenneTwister(31)
+    pts = mixed_points3(rng, 20000)
+    box = (P3(0, 0, 0), 1.0)
+    for m in (CubeKernelIndependent{3}(Laplace3D(); p=4), SphericalHarmonics(Laplace3D(); p=6))
+        f = FMM(m, pts; ppl=60, bbox=box)
+        plan = DevicePlan(f)
+        tree = f.tree
+        ops3 = f.ops[min(3, FlexibleFMM.nlevels(f))]
+        sc = m isa SphericalHarmonics ? ops3.extra.sc :                 # the classes the plan uses
+             FlexibleFMM.class_operators(m.kernel, ops3.extra.small, ops3.extra.embed, ops3.width, ops3.extra.p)[1]
+        nclass = length(sc.reps)
+        for l in 3:FlexibleFMM.nlevels(f)
+            il = tree.ilists[l]
+            li = plan.lists[l]
+            lo = first(tree.level_range[l])
+            # the (target, source, offset) triples
+            host = sort!([(il.tgt[q], il.src[q], fi) for fi in eachindex(sc.class) for q in pair_range(il, fi)])
+            dev = sort!([(lo + Int(li.rtgt[r]) - 1, Int(li.src[p]), Int(li.f[p])) for r in 1:length(li.rtgt) for p in li.rptr[r]:li.rptr[r+1]-1])
+            @test host == dev
+            # the class lists: the same pairs per class (the device orders a class's targets
+            # by node, the host by Morton key; each target's pairs are consecutive in both)
+            cl = class_lists(il, sc.class, nclass, lo)
+            pos = 1
+            for c in 1:nclass
+                n = length(cl[c])
+                @test sort(collect(zip(Int.(li.src[pos:pos+n-1]), Int.(li.f[pos:pos+n-1])))) == sort(collect(zip(Int.(cl[c].src), Int.(cl[c].f))))
+                pos += n
+            end
+            # the chunks cover each class's pairs once, with the runs of their pairs
+            for ch in plan.chunks[l]
+                @test ch.npk <= ch.len && ch.r1 <= ch.r2
+                @test li.rptr[ch.r1] <= ch.a && (ch.r2 == length(li.rtgt) || li.rptr[ch.r2+1] > ch.a + ch.npk - 1)
+            end
+            @test sum(ch.npk for ch in plan.chunks[l]; init=0) == length(il.tgt)
+        end
+        # the matvec from inputs in the original order equals the one from the tree's order
+        τ = randn(rng, length(pts))
+        st = build_expansions(f, pts, τ)
+        u1 = device_matvec!(similar(τ), plan, (sources=st.sources, τ=st.τ); sorted=true)
+        u2 = device_matvec!(similar(τ), plan, (sources=pts, τ=τ))
+        @test u1 == u2
+        @test mrd(u2, evaluate_at_sources(f, st)) < 1e-10
+    end
 end

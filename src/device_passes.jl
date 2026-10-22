@@ -16,8 +16,9 @@ circle) method or of a harmonic method (`SphericalHarmonics`, `StokesHarmonics`:
 the class representatives of `docs/harmonics.md`, the S2M and evaluation kernels
 through the same folds as the CPU, no pseudo-inverse stages): the evaluation data (`DeviceEvaluator`), the per-level operators
 (folded M2M and L2L, the pseudo-inverse factors, the class operators of the dense
-translations), the per-level node lists, the class pair lists grouped by target,
-the signed permutations of the far offsets, and the work buffers. With `tol > 0`
+translations), the per-level node lists, the interaction lists by class built on
+the device from the tree's flat arrays (`device_lists.jl`), the signed
+permutations of the far offsets, and the work buffers. With `tol > 0`
 the class operators of the cube method are replaced by their low-rank factors
 (`class_factors`: singular values above `tol` times the largest), two GEMMs per
 chunk instead of one, `4·n·k` flops per pair instead of `2·n²`; `tol` should sit
@@ -25,21 +26,6 @@ below the accuracy of the order used (`1e-8` for Laplace at `p = 8`, `1e-6` for
 Stokes). `verbose` prints the build's stages (evaluator, operators, pair lists, buffers
 and uploads).
 """
-# The pairs of one class of one level, grouped by target, in chunks of at most
-# `chunk` columns, each padded (with dummy pairs that no target reads) to the
-# power of two above its own size, `len`: the gather fills the Ns × nb·len buffer of
-# that size, one GEMM on it, and the scatter runs over the chunk's targets. (Padding
-# every chunk to `chunk` cost the 34-class harmonic methods 5× the real gather and
-# GEMM volume, and the cube method 4×.)
-struct ClassChunk{VI}
-    class::Int
-    len::Int       # padded number of columns (pairs)
-    src::VI        # global source node per column (padded)
-    f::VI          # far offset per column
-    tgt::VI        # local target index of each target in the chunk
-    ptr::VI        # CSR over the columns, per target
-end
-
 struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     dev::E
     nlevels::Int
@@ -65,7 +51,8 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     nb::Int                                                  # scalar expansions per box (columns per pair)
     offs::VO                                                 # the far offsets (the Stokes coupling)
     pinv::Bool                                               # kernel-independent: pseudo-inverse stages
-    chunks::Vector{Vector{ClassChunk{VI}}}                  # per level: the pairs by class in fixed-size chunks
+    lists::Vector{DeviceLevelLists{VI}}                      # per level: the class lists and their runs, on the device
+    chunks::Vector{Vector{ClassChunk}}                       # per level: the pieces of the class lists the GEMMs take
     chunk::Int
     multipoles::M; plocals::M; locals::M                     # global, one column per node
     pM::Vector{M}; tup::Vector{M}; Mup::Vector{M}            # per level: S2M check data and pinv work
@@ -73,6 +60,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     G::Vector{M}; Y::Vector{M}                               # per level: L2L input and output
     pL::Vector{M}; pLq::Vector{M}; tdn::Vector{M}; Ldn::Vector{M}   # per level: partial locals, their leaf columns, pinv work, leaf densities
     Gc::Dict{Int,M}; Yc::Dict{Int,M}                         # per chunk length: class gather and GEMM output
+    scratch::Dict{Any,Any}                                   # the inputs gathered into the tree's order, per type
 end
 
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
@@ -182,17 +170,24 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         inv[sc.idx_t[fi], fi] = 1:Ns; sgn_t[:, fi] = sc.sgn_t[fi]  # the scatter applies P_t
     end
     offs = to(SVector{D,R}.(far_offsets(Val(D))))                 # the Stokes coupling Ψ̂ += o·Φ
-    # the pairs by class, grouped by target: one pass over the lists' by-target
-    # Morton view per level (threaded over levels, no sorting), then the uploads
+    # the lists, the class lists and the chunks of every level, built on the device
+    # from the tree's flat arrays (device_lists.jl); levels 1 and 2 have no far pairs
     nclass = length(sc.reps)
     chunk = 4096
     VI = typeof(to(Int32[]))
     t_lists = @elapsed begin
-        host = Vector{Vector{Tuple{Int,Int,Vector{Int32},Vector{Int32},Vector{Int32},Vector{Int32}}}}(undef, L)
-        Threads.@threads :dynamic for l in 1:L
-            host[l] = _class_chunks_host(tree.ilists[l], sc.class, nclass, chunk, lo[l])
+        dt = DeviceTree(tree, to)
+        far_index_d = to(Int32.(tree.far_index))
+        class_d = to(Int32.(sc.class))
+        lists = Vector{DeviceLevelLists{VI}}(undef, L)
+        chunks = Vector{Vector{ClassChunk}}(undef, L)
+        for l in 1:L
+            if l >= 3
+                lists[l], chunks[l] = _device_level_lists(dt, dev.colleagues, lo[l], nl[l], far_index_d, class_d, nclass, chunk, Val(D))
+            else
+                lists[l], chunks[l] = DeviceLevelLists(to(Int32[])), ClassChunk[]
+            end
         end
-        chunks = [[ClassChunk{VI}(c, len, to(src), to(fs), to(tg), to(ptr)) for (c, len, src, fs, tg, ptr) in host[l]] for l in 1:L]
     end
     t_up = @elapsed begin
     proto = to(Matrix{TO}(undef, 0, 0))
@@ -228,7 +223,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         pinv ? [Float64(f.ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
         M2Lc, m2l_scale, M2Lb,
         Dict(key => mk(max(1, r), nb * key[2]) for (key, r) in zranks),
-        to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, chunks, chunk,
+        to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, lists, chunks, chunk,
         mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),
         [mk(pml, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
         [mk(rup(l), max(1, length(f.s2m_nodes[l]))) for l in 1:L],
@@ -236,7 +231,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         [mk(nc * Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L], [mk(Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L],
         [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
         [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],
-        Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens))
+        Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens), Dict{Any,Any}())
     end
     if verbose
         t_all = time() - t_start
@@ -272,29 +267,6 @@ end
 end
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{1}) = _accumulate_order!(col, ŷ, p, tb, _scaled_density(τ, s), m)
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{4}) = _stokes_accumulate_order!(col, (p + 1)^2, ŷ, p, tb, τ, s, m)
-
-# The chunks of one level on the host: each class list (the pairs in target order,
-# `class_lists`) cut into chunks of at most `chunk` pairs with their target runs,
-# each padded to the power of two above its size.
-function _class_chunks_host(il::InteractionList, class::Vector{Int}, nclass::Int, chunk::Int, lo::Int)
-    out = Tuple{Int,Int,Vector{Int32},Vector{Int32},Vector{Int32},Vector{Int32}}[]
-    for (c, cl) in enumerate(class_lists(il, class, nclass, lo))
-        n = length(cl)
-        for a in 1:chunk:n
-            b = min(a + chunk - 1, n)
-            npk = b - a + 1
-            len = max(64, nextpow(2, npk))
-            src = fill(Int32(1), len); fs = fill(Int32(1), len)
-            src[1:npk] = view(cl.src, a:b); fs[1:npk] = view(cl.f, a:b)
-            r1, r2 = _run_range(cl, a, b)
-            tg = cl.tgt[r1:r2]
-            ptr = Int32[max(Int(cl.ptr[r]), a) - a + 1 for r in r1:r2]
-            push!(ptr, Int32(npk + 1))
-            push!(out, (c, len, src, fs, tg, ptr))
-        end
-    end
-    return out
-end
 
 # ---- kernels ----
 
@@ -340,43 +312,50 @@ end
 end
 # gather P_sᵀ·m_s for the pairs of a class, the nb scalar expansions of a pair as
 # consecutive columns: Gc[i, (q−1)nb + a] = sgn[i, f] · M[(a−1)n + idx[i, f], src[q]]
-@kernel function _class_gather!(Gc, @Const(M), @Const(src), @Const(fs), @Const(idx), @Const(sgn), ::Val{nb}) where {nb}
+@kernel function _class_gather!(Gc, @Const(M), @Const(src), @Const(fs), a::Int32, npk::Int32, @Const(idx), @Const(sgn),
+                                ::Val{nb}) where {nb}
     g = @index(Global, Linear)
     @inbounds begin
         n = size(Gc, 1)
         col = (g - 1) ÷ n + 1
         i = (g - 1) % n + 1
         q = (col - 1) ÷ nb + 1
-        a = (col - 1) % nb + 1
-        f = Int(fs[q])
-        Gc[i, col] = sgn[i, f] * M[(a - 1) * n + Int(idx[i, f]), Int(src[q])]
+        blk = (col - 1) % nb + 1
+        if q <= npk
+            f = Int(fs[a + q - 1])
+            Gc[i, col] = sgn[i, f] * M[(blk - 1) * n + Int(idx[i, f]), Int(src[a + q - 1])]
+        else                                    # padding column
+            Gc[i, col] = zero(eltype(Gc))
+        end
     end
 end
-# scatter P_t·y_q into the targets, one work-item per (target of the class, block a,
-# entry j): (P_t y)[j] = sgn_t[inv[j]] · y[inv[j]]; the fourth block of the Stokes
-# method also takes the coupling o·Φ of the pair's offset
-@kernel function _class_scatter!(pL, @Const(Yc), @Const(tgt), @Const(ptr), @Const(fs), @Const(inv), @Const(sgn), @Const(offs), α,
-                                 ::Val{nb}) where {nb}
+# scatter P_t·y_q into the targets, one work-item per (run of the chunk, block a,
+# entry j): (P_t y)[j] = sgn_t[inv[j]] · y[inv[j]] over the run's pairs that fall in
+# the chunk; the fourth block of the Stokes method also takes the coupling o·Φ of
+# the pair's offset
+@kernel function _class_scatter!(pL, @Const(Yc), @Const(rtgt), @Const(rptr), @Const(fs), a::Int32, npk::Int32, r1::Int32,
+                                 @Const(inv), @Const(sgn), @Const(offs), α, ::Val{nb}) where {nb}
     g = @index(Global, Linear)
     @inbounds begin
         n = size(Yc, 1)
         t = (g - 1) ÷ (n * nb) + 1
         r = (g - 1) % (n * nb)
-        a = r ÷ n + 1
+        blk = r ÷ n + 1
         j = r % n + 1
+        run = Int(r1) + t - 1
         acc = zero(eltype(pL))
-        for q in Int(ptr[t]):Int(ptr[t+1]) - 1
-            f = Int(fs[q])
+        for p in max(Int(rptr[run]), Int(a)):min(Int(rptr[run+1]) - 1, Int(a) + Int(npk) - 1)
+            f = Int(fs[p])
             i = Int(inv[j, f])
-            col = (q - 1) * nb + a
+            col = (p - Int(a)) * nb + blk
             v = Yc[i, col]
-            if nb == 4 && a == 4
+            if nb == 4 && blk == 4
                 o = offs[f]
                 v += o[1] * Yc[i, col-3] + o[2] * Yc[i, col-2] + o[3] * Yc[i, col-1]
             end
             acc += sgn[i, f] * v
         end
-        pL[(a - 1) * n + j, Int(tgt[t])] += α * acc
+        pL[(blk - 1) * n + j, Int(rtgt[run])] += α * acc
     end
 end
 
@@ -391,13 +370,14 @@ function _pinv_apply!(out, Uh, invS, V, X, tmp, α)
 end
 
 """
-    device_build_expansions!(plan::DevicePlan, ds)
+    device_build_expansions!(plan::DevicePlan, ds; sorted=false)
 
 The upward and downward passes on the device from the device state `ds`
 (sources and densities): fills `plan.multipoles`, `plan.plocals` and
 `plan.locals`, the last of which the evaluation kernel reads.
 """
-function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
+function device_build_expansions!(plan::DevicePlan{D}, ds; sorted::Bool=false) where {D}
+    ds = sorted ? ds : _sorted_inputs(plan, ds)
     dev = plan.dev
     backend = get_backend(plan.multipoles)
     K = dev.kernel
@@ -449,9 +429,11 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
             fill!(pL, zero(eltype(pL)))
         end
         Ns = Nm ÷ plan.nb
+        li = plan.lists[l]
         for ch in plan.chunks[l]
             Gc, Yc = plan.Gc[ch.len], plan.Yc[ch.len]
-            _class_gather!(backend, 256)(Gc, Mp, ch.src, ch.f, plan.idx, plan.sgn, Val(plan.nb); ndrange=Ns * plan.nb * ch.len)
+            _class_gather!(backend, 256)(Gc, Mp, li.src, li.f, Int32(ch.a), Int32(ch.npk), plan.idx, plan.sgn, Val(plan.nb);
+                                         ndrange=Ns * plan.nb * ch.len)
             if isempty(plan.M2Lb[l])
                 mul!(Yc, plan.M2Lc[l][ch.class], Gc)
             else                                    # low-rank: A·(Bt·Gc)
@@ -459,9 +441,9 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
                 mul!(Z, plan.M2Lb[l][ch.class], Gc)
                 mul!(Yc, plan.M2Lc[l][ch.class], Z)
             end
-            nt = length(ch.tgt)
-            _class_scatter!(backend, 256)(pL, Yc, ch.tgt, ch.ptr, ch.f, plan.inv, plan.sgn_t, plan.offs, eltype(pL)(plan.m2l_scale[l]),
-                                          Val(plan.nb); ndrange=pll * nt)
+            nt = ch.r2 - ch.r1 + 1
+            _class_scatter!(backend, 256)(pL, Yc, li.rtgt, li.rptr, li.f, Int32(ch.a), Int32(ch.npk), Int32(ch.r1), plan.inv,
+                                          plan.sgn_t, plan.offs, eltype(pL)(plan.m2l_scale[l]), Val(plan.nb); ndrange=pll * nt)
         end
         copyto!(vec(Pl), (plan.lo[l] - 1) * pll + 1, vec(pL), 1, pll * nl)
         # the densities of the level's real leaves only (the propagation runs on the partials)
@@ -496,12 +478,31 @@ _device_l2l!(plan::DevicePlan, l::Int, G, ng::Int, backend) = (mul!(plan.Y[l], p
 end
 
 """
-    device_matvec!(out, plan::DevicePlan, ds; output=Potential())
+    device_matvec!(out, plan::DevicePlan, ds; output=Potential(), sorted=false)
 
 Expansions on the device and the self evaluation at the sources, `out` in the
 original order.
 """
-function device_matvec!(out::AbstractVector, plan::DevicePlan, ds; output=Potential())
-    device_build_expansions!(plan, ds)
+function device_matvec!(out::AbstractVector, plan::DevicePlan, ds; output=Potential(), sorted::Bool=false)
+    ds = sorted ? ds : _sorted_inputs(plan, ds)
+    device_build_expansions!(plan, ds; sorted=true)
     return evaluate_at_sources!(out, plan.dev, (locals=plan.locals, sources=ds.sources, τ=ds.τ); output=output)
+end
+# the sources and densities gathered into the tree's order by `perm`, into buffers
+# the plan keeps per element type (`sorted=true` on the entry points takes inputs
+# already in that order, as `device_state` provides them)
+function _sorted_inputs(plan::DevicePlan, ds)
+    sources = _gather_input!(plan, :sources, ds.sources)
+    τ = _gather_input!(plan, :τ, ds.τ)
+    return (sources=sources, τ=τ)
+end
+function _gather_input!(plan::DevicePlan, name::Symbol, x)
+    key = (name, typeof(x))
+    buf = get(plan.scratch, key, nothing)
+    if buf === nothing || length(buf) != length(x)
+        buf = similar(x)
+        plan.scratch[key] = buf
+    end
+    _gather_perm!(get_backend(buf), 256)(buf, x, plan.dev.perm; ndrange=length(x))
+    return buf
 end

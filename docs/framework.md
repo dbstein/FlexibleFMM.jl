@@ -235,14 +235,32 @@ and `target_field` methods for the outputs it should support.
   operator per offset) in chunks of at most 4096 pairs, each padded to the power of two above its own
   size (padding every chunk to 4096 cost the 34-class harmonic methods 5× and the
   cube method 4× the real gather and GEMM volume), and exact-size work buffers
-  per chunk size. The chunk lists are cut from the class lists of
-  `src/operators/symmetry.jl` (the pairs of each class in the interaction lists'
-  target order, one pass over the by-target view per level, the CPU translation's
-  lists too), threaded over levels (the first version
-  materialised every pair as a tuple and sorted it per class, which took 12.5 s
-  of a 10⁷-point Stokes plan on an H100 against 2.2 s for the tree; the pass
-  takes 0.03 s for 10⁶ points on the CPU backend); `DevicePlan(…; verbose=true)`
-  reports the build's stages. `device_build_expansions!` runs
+  per chunk size. The lists themselves are built on the device (`src/device_lists.jl`):
+  from the tree's flat arrays (cells, parents, first children, the ghost and
+  has-source flags, moved once) one work-item per target counts its far pairs, a
+  prefix sum places them and a fill writes them; the pairs are counted per
+  (target, class), placed class-major (the class lists of `symmetry.jl`, targets in
+  node order) and filled; the runs (one per target and class) come from a
+  compaction of the counts and the chunks, six integers each, from the per-class
+  totals with their run ranges by binary search in the run starts. The host reads
+  back three counts and the chunk descriptors per level, nothing else, and the
+  gather and scatter kernels read the chunk's pairs and runs through its
+  descriptor. (The first version cut the chunks on the host from the by-target
+  lists and uploaded four arrays per chunk, 0.97 of the 1.15 s plan build of 10⁷
+  points on the M3 Max; the version before it materialised every pair as a tuple
+  and sorted it per class, 12.5 s of a 10⁷-point plan on an H100.) The inputs of
+  `device_matvec!` are taken in their original order and gathered into the
+  tree's by `perm` on the device (the output is written in the original order
+  already); `sorted=true` takes them in the tree's order, as `device_state`
+  provides them. The prefix sums of the list build are KernelAbstractions kernels
+  of the package (block totals, a recursive scan of them, the blocks scanned with
+  their offsets): Metal's `accumulate!` and `sum(…; dims)` go through MPSGraph,
+  which compiles a graph per array size, 0.2–1.2 s of every plan build since every
+  tree has new level sizes. `DevicePlan(…; verbose=true)` reports the build's
+  stages. On the M3 Max (Metal, Float32, sphere points, Stokes cube `p = 4`, 800 per
+  leaf) the plan builds in 0.07 s at 10⁶ points and 0.22 s at 10⁷ (lists 0.02 and
+  0.05 s), against 1.3 and 1.8 s with the lists on the host, and the tree in 0.06 and
+  0.32 s on 12 threads; the matvec takes 0.11 and 0.91 s. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);

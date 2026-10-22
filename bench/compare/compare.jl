@@ -81,7 +81,7 @@ function run_ours(m, τ, ptsT; dev=to)
     sw = build_expansions(fw, ptsT[1:nw], τ[1:nw]); evaluate_at_sources(fw, sw)
     if dev !== nothing
         pw = DevicePlan(fw, dev)
-        device_matvec!(dev(similar(evaluate_at_sources(fw, sw))), pw, (sources=dev(sw.sources), τ=dev(sw.τ)))
+        device_matvec!(dev(similar(evaluate_at_sources(fw, sw))), pw, (sources=dev(ptsT[1:nw]), τ=dev(τ[1:nw])))
     end
     cache = OperatorCache(m)            # operators are built once per kernel and order and reused
     f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
@@ -92,8 +92,7 @@ function run_ours(m, τ, ptsT; dev=to)
         t_first = @elapsed (st = build_expansions(f, ptsT, τ); out = evaluate_at_sources(f, st))
         t_mv = minimum(@elapsed((build_expansions!(st, f, ptsT, τ); out = evaluate_at_sources(f, st))) for _ in 1:3)
     else
-        perm = f.tree.perm
-        ds = (sources=dev(ptsT[perm]), τ=dev(τ[perm]))
+        ds = (sources=dev(ptsT), τ=dev(τ))                  # original order: the plan gathers
         outd = dev(similar(τ, typeof(evaluate_at_sources(fw, sw)[1])))
         local plan
         t_first = @elapsed (plan = DevicePlan(f, dev); device_matvec!(outd, plan, ds))

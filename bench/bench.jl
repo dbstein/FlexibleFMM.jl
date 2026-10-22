@@ -86,7 +86,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
     usw = evaluate_at_sources(fw, sw)
     if to !== nothing
         pw = DevicePlan(fw, to)
-        device_matvec!(to(similar(usw)), pw, (sources=to(sw.sources), τ=to(sw.τ)))
+        device_matvec!(to(similar(usw)), pw, (sources=to(pts[1:nw]), τ=to(τ[1:nw])))
     end
     cache = fw.cache
     t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
@@ -103,9 +103,10 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         t_mv = t_up + t_down + t_self
         @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | first %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_first 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv, cores) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv, cores)
     else
-        # the device only: the plan from the tree, no CPU pass; the error against direct
-        # sums over all sources at nerr of them
-        ds = (sources=to(pts[perm]), τ=to(τ[perm]))
+        # the device only: the plan from the tree, no CPU pass; the inputs in their
+        # original order (the plan gathers them into the tree's); the error against
+        # direct sums over all sources at nerr of them
+        ds = (sources=to(pts), τ=to(τ))
         outd = to(similar(τ, eltype(usw)))
         local plan
         rp = @timed plan = DevicePlan(f, to; verbose=true)

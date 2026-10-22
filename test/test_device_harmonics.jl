@@ -20,11 +20,11 @@ const KDS = Stokeslet3D()
     @test plan.dev.far isa DeviceHarmonic && !plan.pinv && plan.nb == 1
     @test length(plan.M2Lc[3]) == 34
     ds = (sources=st.sources, τ=st.τ)
-    device_build_expansions!(plan, ds)
+    device_build_expansions!(plan, ds; sorted=true)
     @test maximum(abs, plan.multipoles .- st.multipoles) < 1e-13 * maximum(abs, st.multipoles)
     @test maximum(abs, plan.locals .- st.locals) < 1e-11 * maximum(abs, st.locals)
     out = zeros(N)
-    device_matvec!(out, plan, ds)
+    device_matvec!(out, plan, ds; sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-11
     nodes = Int32.(locate(f.tree, targets))
     dsl = (locals=plan.locals, sources=ds.sources, τ=ds.τ)
@@ -38,7 +38,7 @@ const KDS = Stokeslet3D()
     τd = [(randn(rng), Dipole(randn(rng, P3))) for _ in 1:N]
     std = build_expansions(f, pts, τd)
     outd = zeros(N)
-    device_matvec!(outd, plan, (sources=std.sources, τ=std.τ))
+    device_matvec!(outd, plan, (sources=std.sources, τ=std.τ); sorted=true)
     @test mrd(outd, evaluate_at_sources(f, std)) < 1e-11
 end
 
@@ -53,11 +53,11 @@ end
     plan = DevicePlan(f)
     @test plan.nb == 4 && all(size(G) == ((m.p + 1)^2, 4len) for (len, G) in plan.Gc)
     ds = (sources=st.sources, τ=st.τ)
-    device_build_expansions!(plan, ds)
+    device_build_expansions!(plan, ds; sorted=true)
     @test maximum(abs, plan.multipoles .- st.multipoles) < 1e-13 * maximum(abs, st.multipoles)
     @test maximum(abs, plan.locals .- st.locals) < 1e-11 * maximum(abs, st.locals)
     out = zeros(P3, N)
-    device_matvec!(out, plan, ds)
+    device_matvec!(out, plan, ds; sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-11
     nodes = Int32.(locate(f.tree, targets))
     dsl = (locals=plan.locals, sources=ds.sources, τ=ds.τ)
@@ -77,14 +77,14 @@ end
     plan = DevicePlan(f)
     @test eltype(plan.multipoles) == Float32
     out = zeros(Float32, N)
-    device_matvec!(out, plan, (sources=st.sources, τ=st.τ))
+    device_matvec!(out, plan, (sources=st.sources, τ=st.τ); sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-5
     fc = FMM(CubeKernelIndependent{3}(KDH; p=6), P3.(pts); ppl=40, bbox=(P3(0, 0, 0), 1.0))
     stc = build_expansions(fc, P3.(pts), Float64.(τ))
     planc = DevicePlan(fc)
     @test planc.dev.far isa DeviceSurface && planc.pinv && planc.nb == 1
     outc = zeros(N)
-    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ))
+    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ); sorted=true)
     @test mrd(outc, evaluate_at_sources(fc, stc)) < 1e-11
     @test_throws ArgumentError DevicePlan(FMM(BlackBox(Laplace2D(); p=6), [rand(rng, SVector{2,Float64}) for _ in 1:500]; ppl=30))
 end
