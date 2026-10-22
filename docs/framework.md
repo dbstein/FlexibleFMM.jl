@@ -153,10 +153,12 @@ configuration to measure, not a default: on a 64-core Icelake node, where a
 region costs 40 µs, it is 1.5× slower (10⁶ sphere points, Stokes p = 6: matvec
 1.0 → 1.6 s, the pseudo-inverse transforms of the cube method 10× slower split
 over Julia threads than under OpenBLAS's 32 threads, and the spinning threads slow
-the working ones in the evaluation, 0.72 → 1.2 s). The
-per-offset M2L of the circle and non-covariant methods and the FFTW transforms
-of the cube method (planned with the Julia thread count, each execution
-spawning its tasks) still take a region per offset and per transform.
+the working ones in the evaluation, 0.72 → 1.2 s). The transforms of the cube
+method's spectral translation are planned per box, single-threaded and
+unaligned, and run box by box in one region per transform (planned over the
+whole level with FFTW's threading, each execution spawned its tasks several
+times: the cube method's down pass took 48 s on the Genoa node). The per-offset
+M2L of the circle and non-covariant methods still takes a region per offset.
 
 ## Sources and targets
 

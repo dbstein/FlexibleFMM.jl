@@ -36,7 +36,7 @@ function config_line()
     target = ct == C_NULL ? "native" : unsafe_string(ct)
     return string("CPU ", Sys.CPU_NAME, " (", Sys.CPU_THREADS, " hardware threads, code for ", target, "), Julia threads ", Threads.nthreads(),
                   ", GC threads ", Threads.ngcthreads(), ", BLAS threads ", BLAS.get_num_threads(), " (OpenBLAS core ", core,
-                  "), FFTW threads ", fftw, " (the package plans with the Julia thread count); OPENBLAS_THREAD_TIMEOUT ",
+                  "), FFTW threads ", fftw, " (the package transforms box by box on Julia threads); OPENBLAS_THREAD_TIMEOUT ",
                   env("OPENBLAS_THREAD_TIMEOUT"), ", OMP_NUM_THREADS ", env("OMP_NUM_THREADS"), ", OMP_WAIT_POLICY ",
                   env("OMP_WAIT_POLICY"))
 end

@@ -220,19 +220,32 @@ function SpectralWorkspace(::Type{R}, ::Val{D}, p::Int, ncp::Int, nboxes::Int, :
     Sb = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Û)), bdims)
     Ub = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Σ̂)), bdims)
     ldims = (ntuple(_ -> n, Val(D))..., ncp, nboxes)
-    nt = Threads.nthreads()
+    # the plans transform one box (its ncp lattices), single-threaded and unaligned
+    # so that they apply to every box's slab: the transforms of a level run box by
+    # box in one thread region (FFTW's own threading spawns tasks for every
+    # transform, one region each, which cost 30 ms on a 96-core node)
+    flags = FFTW.ESTIMATE | FFTW.UNALIGNED
     if RP
         X = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Û)), (nlat, ncp, nboxes))
         Y = unsafe_wrap(Array{R,3}, Ptr{R}(pointer(Σ̂)), (nlat, ncp, nboxes))
         hdims = (n ÷ 2 + 1, ntuple(_ -> n, Val(D - 1))..., ncp, nboxes)
-        fwd = plan_rfft(reshape(X, ldims), 1:D; num_threads=nt)
-        bwd = plan_brfft(reshape(Û, hdims), n, 1:D; num_threads=nt)
+        fwd = plan_rfft(_slab(reshape(X, ldims), 1), 1:D; flags=flags)
+        bwd = plan_brfft(_slab(reshape(Û, hdims), 1), n, 1:D; flags=flags)
     else
         X = Y = Array{R,3}(undef, 0, 0, 0)
-        fwd = plan_fft!(reshape(Σ̂, ldims), 1:D; num_threads=nt)
-        bwd = plan_bfft!(reshape(Û, ldims), 1:D; num_threads=nt)
+        fwd = plan_fft!(_slab(reshape(Σ̂, ldims), 1), 1:D; flags=flags)
+        bwd = plan_bfft!(_slab(reshape(Û, ldims), 1), 1:D; flags=flags)
     end
     return SpectralWorkspace{R,D,RP,typeof(fwd),typeof(bwd)}(Σ̂, Û, Sb, Ub, X, Y, B, fwd, bwd)
+end
+# box b of a lattice array (…, ncp, nboxes)
+@inline _slab(A::AbstractArray, b::Int) = selectdim(A, ndims(A), b)
+# the transform of every box of a level, threaded over the boxes
+function _transform_boxes!(f, nl::Int)
+    Threads.@threads :dynamic for b in 1:nl
+        f(b)
+    end
+    return nothing
 end
 
 # One block of one pair for all component pairs at once, on linear indices:
@@ -335,7 +348,10 @@ function _spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstr
                 end
             end
         end
-        mul!(reshape(Σ̂, hdims), ws.fwd, reshape(X, ldims))
+        Xr, Σ̂h = reshape(X, ldims), reshape(Σ̂, hdims)
+        _transform_boxes!(nl) do b
+            mul!(_slab(Σ̂h, b), ws.fwd, _slab(Xr, b))
+        end
     else
         fill!(Σ̂, zero(Complex{R}))
         Threads.@threads :dynamic for j in 1:nl
@@ -346,7 +362,10 @@ function _spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstr
                 end
             end
         end
-        ws.fwd * reshape(Σ̂, ldims)
+        Σ̂r = reshape(Σ̂, ldims)
+        _transform_boxes!(nl) do b
+            ws.fwd * _slab(Σ̂r, b)
+        end
     end
     # 2. Hadamard products in the blocked layout: every pair of the level per block,
     #    threads over blocks (Sb aliases Û, Ub aliases Σ̂; see SpectralWorkspace)
@@ -406,14 +425,20 @@ function _spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstr
     β = α / n^D
     if RP
         Y = ws.Y
-        mul!(reshape(Y, ldims), ws.bwd, reshape(Û, hdims))
+        Yr, Ûh = reshape(Y, ldims), reshape(Û, hdims)
+        _transform_boxes!(nl) do b
+            mul!(_slab(Yr, b), ws.bwd, _slab(Ûh, b))
+        end
         Threads.@threads :dynamic for j in 1:nl
             @inbounds for a in 1:nc, i in 1:N
                 pL[(a - 1) * N + i, j] += β * _cassemble(S, ntuple(k -> Y[embed[i], (a - 1) * np + k, j], np))
             end
         end
     else
-        ws.bwd * reshape(Û, ldims)
+        Ûr = reshape(Û, ldims)
+        _transform_boxes!(nl) do b
+            ws.bwd * _slab(Ûr, b)
+        end
         Threads.@threads :dynamic for j in 1:nl
             @inbounds for a in 1:nc, i in 1:N
                 pL[(a - 1) * N + i, j] += β * _cassemble(S, ntuple(k -> Û[embed[i], (a - 1) * np + k, j], np))
