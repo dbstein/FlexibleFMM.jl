@@ -159,7 +159,8 @@ implementation exists to be tested, not to be fast.
 
 `bench/compare/compare.jl` runs the same points through FMM2D.jl and FMM3D.jl
 (their own environment; the kernel normalisations are calibrated on a small
-problem and reported). Uniform points, 12 Apple cores, errors at 2000 targets
+problem and reported). Uniform points, 12 Apple cores, errors at 2000 points (separate targets when these
+rows were measured; the script now evaluates at the sources only)
 against the direct sum; ours is the matvec with cached operators (tree build
 excluded, 0.01–0.15 s), theirs the one-shot call including their tree build.
 
