@@ -4,7 +4,7 @@ A pure-Julia fast multipole method framework in two and three dimensions. One
 driver runs several expansion schemes on an adaptive quadtree or octree whose
 ghost-cell construction makes every far-field interaction a same-width
 multipole-to-local translation and every near-field interaction a same-level
-colleague sum. Three schemes are provided:
+colleague sum. Four schemes are provided:
 
 - `KernelIndependent` — the kernel-independent FMM of Ying, Biros and Zorin
   (equivalent densities on circles); needs only kernel evaluations, for kernels that
@@ -14,6 +14,9 @@ colleague sum. Three schemes are provided:
   `d`), with translation operators applied by FFT; the method for 3D.
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
+- `SphericalHarmonics` — the classical analytic multipole method for `Laplace3D`:
+  real solid-harmonic expansions of degree `p`, exact M2M and L2L, dense M2L per
+  offset; charges and dipoles, potential and gradient (`docs/harmonics.md`).
 
 The code is generic over element types: complex kernels and densities, and
 `ForwardDiff.Dual` positions (directional/shape derivatives) go through unchanged.
@@ -85,13 +88,16 @@ than FMM2D; 3D: level with FMM3D for Laplace and Helmholtz, 25% behind for Stoke
 black-box method converges geometrically in `p`. In
 3D the cube method at `p = 8` has a worst-case translation error of `1e-6` for
 Laplace (global errors about `1e-7`) and `3e-6`, `4e-5`, `1e-3` for stokeslets,
-stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
+stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`). The
+analytic method reaches `3e-6`, `3e-7`, `2e-8` global error at `p = 12, 16, 20` on
+uniform data, with a worst case (corner source facing a corner target) converging
+only as `0.7^p` (`docs/harmonics.md`).
 
 ## Layout
 
 - `src/tree/` — the ghost-cell quadtree (`docs/tree.md`)
 - `src/operators/` — the method interface, the operator cache, and the methods
-  (`docs/framework.md`, `docs/kifmm.md`, `docs/bbfmm.md`)
+  (`docs/framework.md`, `docs/kifmm.md`, `docs/bbfmm.md`, `docs/harmonics.md`)
 - `src/fmm.jl`, `src/evaluate.jl` — the driver
 - `test/` — run with `julia --project=. -t auto test/runtests.jl` (or `Pkg.test()`);
   includes a kernel-free combinatorial check of the tree's interaction structure,

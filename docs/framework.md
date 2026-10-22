@@ -148,16 +148,18 @@ and `target_field` methods for the outputs it should support.
 
 ## Where extensions plug in
 
-- **Another expansion scheme** (e.g. analytic Laplace/Helmholtz translations): a new
-  `AbstractMethod` with the five operations and identity transforms; nothing in the
-  driver changes (this is how `BlackBox` was added after `KernelIndependent`).
+- **Another expansion scheme**: a new `AbstractMethod` with the five operations and
+  identity transforms; nothing in the driver changes (this is how `BlackBox` was
+  added after `KernelIndependent`, and `SphericalHarmonics`, the analytic Laplace
+  method of `docs/harmonics.md`, after the 3D work).
 - **Vector kernels** (Brinkman, say): as Stokes is done (`docs/stokes.md`), an
   `SMatrix`-valued kernel with `SVector` densities goes through the same
   `source_field`/`target_field` hooks; kernel matrices are assembled block-wise, the
   method owns the expansion length (the Stokes augmentations), and `Pressure()` is an
   output type evaluating the pressure kernel against the equivalent density.
 - **3D**: done through `CubeKernelIndependent{3}` with `Laplace3D`, `Helmholtz3D`,
-  `Yukawa3D` and `Stokeslet3D`; `KernelIndependent` (circles) and `BlackBox` are 2D.
+  `Yukawa3D` and `Stokeslet3D`, and `SphericalHarmonics` with `Laplace3D`;
+  `KernelIndependent` (circles) and `BlackBox` are 2D.
   What 3D still needs is memory work on the spectral path (`docs/kifmm.md`).
 - **GPU** (KernelAbstractions): the evaluation runs on a device (`src/device.jl`):
   `DeviceEvaluator(fmm, to)` moves the tree data once with a user-supplied array

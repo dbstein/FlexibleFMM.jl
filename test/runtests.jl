@@ -66,6 +66,9 @@ include("operator_checks.jl")
     @testset "three dimensions" begin
         include("test_3d.jl")
     end
+    @testset "spherical harmonics" begin
+        include("test_harmonics.jl")
+    end
     @testset "device evaluation" begin
         include("test_device.jl")
     end

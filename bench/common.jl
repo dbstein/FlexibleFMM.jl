@@ -6,7 +6,8 @@
 # each in the dimension given and in the precision asked for. Methods: ki:nequiv
 # (kernel-independent on circles, 2D), square:p or cube:p, optionally :d
 # (kernel-independent on squares/cubes, p points per edge, margin d, FFT
-# translations, pc = 2p), bb:p (black-box, 2D). Distributions: uniform, circle
+# translations, pc = 2p), bb:p (black-box, 2D), harmonics:p (analytic solid-harmonic
+# expansions, Laplace 3D). Distributions: uniform, circle
 # (sphere in 3D; both names work), clustered.
 using FlexibleFMM, StaticArrays, Random, LinearAlgebra
 
@@ -50,10 +51,14 @@ function parse_method(s, K, ::Val{D}) where {D}
         d = length(parts) > 2 ? parse(Float64, parts[3]) : 0.1
         return ("$(D == 2 ? "Square" : "Cube")$rest d=$d", CubeKernelIndependent{D}(K; p=parse(Int, rest), d=d))
     end
-    D == 2 || error("method $s is 2D; use cube:p[:d] in 3D")
+    if name == "harmonics"
+        D == 3 || error("method $s is 3D")
+        return ("Harmonics$rest", SphericalHarmonics(K; p=parse(Int, rest)))
+    end
+    D == 2 || error("method $s is 2D; use cube:p[:d] or harmonics:p in 3D")
     name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))
     name == "bb" && return ("BB$rest", BlackBox(K; p=parse(Int, rest)))
-    error("unknown method $s (ki:nequiv, square:p[:d] / cube:p[:d], bb:p)")
+    error("unknown method $s (ki:nequiv, square:p[:d] / cube:p[:d], bb:p, harmonics:p)")
 end
 
 # random densities of the kind a kernel specification takes, in the kernel's precision
