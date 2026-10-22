@@ -73,7 +73,7 @@ cvt(τ::AbstractVector) = TP === Float64 ? τ : map(cvt, τ)
 # on a device it is the plan build and the first device matvec), and the matvec is
 # the best of three warm repetitions. With a device no CPU pass runs.
 function run_ours(m, τ, ptsT; dev=to)
-    nw = min(length(ptsT), 2000)
+    nw = min(length(ptsT), max(2000, 100 * ppl))   # a warm-up tree with far-field interactions (compiles the whole matvec)
     fw = FMM(m, ptsT[1:nw]; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)))
     sw = build_expansions(fw, ptsT[1:nw], τ[1:nw]); evaluate_at_sources(fw, sw)
     if dev !== nothing

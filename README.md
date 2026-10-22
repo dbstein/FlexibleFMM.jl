@@ -123,6 +123,10 @@ cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
   `device=ka_cpu` runs the same passes on KernelAbstractions' CPU backend;
   `device=cuda precision=float32` from the `bench/cuda` environment (instantiate
   it on the machine) on an NVIDIA card
+- `bench/threads.jl` — threading diagnostics for a machine (the cost of a thread
+  region, of compute and allocating tasks, of the class translations' small GEMMs,
+  then the phases of one case), for reading cluster nodes whose matvec is far
+  slower than their cores allow
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
   FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies; the
   same `kernel`, `method`, `dist`, `ppl` and `device` options as the benchmark plus
