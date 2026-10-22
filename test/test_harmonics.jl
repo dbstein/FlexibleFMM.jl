@@ -221,7 +221,7 @@ end
     pts = uniform_points3(rng, N); τ = randn(rng, N); targets = uniform_points3(rng, 300)
     f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
     st = build_expansions(f, pts, τ)
-    @test haskey(st.scratch, :lowrank)
+    @test any(k -> k isa Tuple && k[1] == :task_workspaces && k[4] > 0, keys(st.scratch))   # the low-rank work of the tasks
     @test mrd(evaluate(f, st, targets), direct(KH, pts, τ, targets)) < 1e-5
     fd = FMM(md, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
     std = build_expansions(fd, pts, τ)

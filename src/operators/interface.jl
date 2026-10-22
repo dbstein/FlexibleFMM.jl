@@ -110,8 +110,42 @@ the stacked children's). The defaults multiply by the matrices; a method whose
 operators have block structure overrides them (`StokesHarmonics`). `work` has at
 least `Nm·ng` entries.
 """
-m2m_apply!(out, m::AbstractMethod, ops::LevelOperators, B, α, work) = mul!(out, ops.M2M, B, eltype(ops.M2M)(α), false)
-l2l_apply!(out, m::AbstractMethod, ops::LevelOperators, G, α, work) = mul!(out, ops.L2L, G, eltype(ops.L2L)(α), false)
+function m2m_apply!(out, m::AbstractMethod, ops::LevelOperators, B, α, work)
+    T = eltype(ops.M2M)
+    column_blocks(size(B, 2)) do cols
+        mul!(view(out, :, cols), ops.M2M, view(B, :, cols), T(α), false)
+    end
+    return out
+end
+function l2l_apply!(out, m::AbstractMethod, ops::LevelOperators, G, α, work)
+    T = eltype(ops.L2L)
+    column_blocks(size(G, 2)) do cols
+        mul!(view(out, :, cols), ops.L2L, view(G, :, cols), T(α), false)
+    end
+    return out
+end
+
+"""
+    column_blocks(f, n)
+
+Runs `f(cols)` over the columns `1:n` of one of the passes' large products (M2M,
+L2L, the pseudo-inverse transforms): in one call when BLAS has threads of its own,
+in Julia-threaded blocks when it has one. Splitting these products over Julia
+threads with single-threaded BLAS calls was measured slower than OpenBLAS's own
+threading on a 12-core machine (`docs/kifmm.md`), so it is not the default; it is
+what lets a run without BLAS threads (`OPENBLAS_NUM_THREADS=1`, the configuration
+for many-core nodes whose Julia threads spin, `bench/threads.jl`) use its cores.
+"""
+function column_blocks(f, n::Int)
+    if n < 64 || Threads.nthreads() == 1 || BLAS.get_num_threads() > 1
+        f(1:n)
+    else
+        Threads.@threads :dynamic for cols in _chunks(n, Threads.nthreads())
+            f(cols)
+        end
+    end
+    return nothing
+end
 
 """
     rescale(ops, m, w) -> LevelOperators

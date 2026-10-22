@@ -183,14 +183,17 @@ end
 The pairs of one symmetry class on one level in the interaction list's target
 order: pair `q` has source node `src[q]` (global) and far offset `f[q]`; the pairs
 of one target are consecutive, run `r` being those of the level-local target
-`tgt[r]`, `ptr[r]:ptr[r+1]-1`. Built by `class_lists` for the class-wise
-translations of the CPU and of the device plan.
+`tgt[r]`, `ptr[r]:ptr[r+1]-1`, which is target number `gpos[r]` of the level's
+target order (increasing with `r`: a block of consecutive targets owns a
+contiguous range of runs). Built by `class_lists` for the class-wise translations
+of the CPU and of the device plan.
 """
 struct ClassList
     src::Vector{Int32}
     f::Vector{Int32}
     tgt::Vector{Int32}
     ptr::Vector{Int32}
+    gpos::Vector{Int32}
 end
 Base.length(cl::ClassList) = length(cl.src)
 
@@ -211,6 +214,7 @@ function class_lists(il::InteractionList, class::Vector{Int}, nclass::Int, lo::I
     fs = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
     tgt = [Int32[] for _ in 1:nclass]
     ptr = [Int32[] for _ in 1:nclass]
+    gpos = [Int32[] for _ in 1:nclass]
     pos = zeros(Int, nclass)
     cur = zeros(Int32, nclass)                     # the target of each class's open run
     @inbounds for g in eachindex(il.torder)
@@ -221,17 +225,19 @@ function class_lists(il::InteractionList, class::Vector{Int}, nclass::Int, lo::I
             src[c][k] = il.tsrc[q]
             fs[c][k] = il.tfar[q]
             if cur[c] != t
-                push!(tgt[c], t); push!(ptr[c], k); cur[c] = t
+                push!(tgt[c], t); push!(ptr[c], k); push!(gpos[c], Int32(g)); cur[c] = t
             end
         end
     end
     for c in 1:nclass
         push!(ptr[c], Int32(counts[c] + 1))
     end
-    return [ClassList(src[c], fs[c], tgt[c], ptr[c]) for c in 1:nclass]
+    return [ClassList(src[c], fs[c], tgt[c], ptr[c], gpos[c]) for c in 1:nclass]
 end
 # the runs holding pairs a and b (a ≤ b ≤ length(cl))
 _run_range(cl::ClassList, a::Int, b::Int) = (searchsortedlast(cl.ptr, a), searchsortedlast(cl.ptr, b))
+# the runs of the targets g1:g2 of the level's target order (empty when r1 > r2)
+_target_runs(cl::ClassList, g1::Int, g2::Int) = (searchsortedfirst(cl.gpos, g1), searchsortedlast(cl.gpos, g2))
 
 # ---- the harmonic basis: the subgroup fixing the z axis ----
 #

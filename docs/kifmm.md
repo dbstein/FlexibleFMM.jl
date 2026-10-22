@@ -205,7 +205,9 @@ timeout) and compete with the Julia-threaded phases that follow the GEMMs, which
 Apple's Accelerate gives the same numbers on this machine; halving the BLAS
 thread count gives half the gain; splitting the GEMMs over Julia threads with
 single-threaded BLAS calls was tried and is slower, toggling the OpenBLAS pool
-being expensive and Accelerate's own threading better); and a reciprocal square
+being expensive and Accelerate's own threading better, so that split is taken
+only when BLAS is started with one thread, `column_blocks` in `docs/framework.md`);
+and a reciprocal square
 root by estimate and Newton steps gains nothing in Float64 on the CPU, while on
 Metal the device's `rsqrt_fast` (the `FastMath` kernel policy, `fast=true` on the
 device plan) gains 1.3× on the Laplace and 1.15× on the Stokes device evaluation at 10⁶ targets (0.076 → 0.058 s and 0.125 → 0.108 s on the M3 Max; the matvec 0.030 and 0.079 s) with deviations of 1e-7 from the precise kernel; the Stokes kernel in isolation gains 2×. The compressed translations of

@@ -11,7 +11,9 @@
 # level), so a machine where waking the threads of a region costs milliseconds
 # instead of microseconds (deep idle states, a slow scheduler) is many times slower
 # than its cores allow; JULIA_THREAD_SLEEP_THRESHOLD=infinite keeps idle threads
-# spinning and removes the wake-ups from the picture.
+# spinning and removes the wake-ups from the picture (then OPENBLAS_NUM_THREADS=1 as
+# well: spinning Julia threads starve OpenBLAS's own, and with one BLAS thread the
+# passes split the large products over Julia threads instead).
 using FlexibleFMM, StaticArrays, LinearAlgebra, Random, Printf
 using FlexibleFMM: upward_pass!, downward_pass!, FMMState
 include(joinpath(@__DIR__, "common.jl"))

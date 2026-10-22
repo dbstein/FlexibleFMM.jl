@@ -133,18 +133,20 @@ function m2m_apply!(out, m::StokesHarmonics, ops::LevelOperators, B, α, work)
     X = reshape(view(work, 1:4N*ng), N, 4ng)
     T = eltype(ops.M2M)
     fill!(out, zero(eltype(out)))
-    @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
-        δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
-        r0 = (j - 1) * 4N
-        for g in 1:ng, i in 1:N
-            X[i, g] = B[r0+i, g]
-            X[i, ng+g] = B[r0+N+i, g]
-            X[i, 2ng+g] = B[r0+2N+i, g]
-            X[i, 3ng+g] = B[r0+3N+i, g] / 2 + δ̂[1] * B[r0+i, g] + δ̂[2] * B[r0+N+i, g] + δ̂[3] * B[r0+2N+i, g]
-        end
-        Aj = view(ops.M2M, :, (j-1)*N+1:j*N)
-        for a in 1:4
-            mul!(view(out, (a-1)*N+1:a*N, :), Aj, view(X, :, (a-1)*ng+1:a*ng), T(α), true)
+    column_blocks(ng) do cols                                  # the tasks own disjoint columns of X and out
+        @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
+            δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
+            r0 = (j - 1) * 4N
+            for g in cols, i in 1:N
+                X[i, g] = B[r0+i, g]
+                X[i, ng+g] = B[r0+N+i, g]
+                X[i, 2ng+g] = B[r0+2N+i, g]
+                X[i, 3ng+g] = B[r0+3N+i, g] / 2 + δ̂[1] * B[r0+i, g] + δ̂[2] * B[r0+N+i, g] + δ̂[3] * B[r0+2N+i, g]
+            end
+            Aj = view(ops.M2M, :, (j-1)*N+1:j*N)
+            for a in 1:4
+                mul!(view(out, (a-1)*N+1:a*N, cols), Aj, view(X, :, (a-1)*ng .+ cols), T(α), true)
+            end
         end
     end
     return out
@@ -154,17 +156,19 @@ function l2l_apply!(out, m::StokesHarmonics, ops::LevelOperators, G, α, work)
     ng = size(G, 2)
     W = reshape(view(work, 1:N*ng), N, ng)
     T = eltype(ops.L2L)
-    @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
-        δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
-        Bj = view(ops.L2L, (j-1)*N+1:j*N, :)
-        r0 = (j - 1) * 4N
-        for a in 1:3
-            mul!(view(out, r0+(a-1)*N+1:r0+a*N, :), Bj, view(G, (a-1)*N+1:a*N, :), T(α), false)
+    column_blocks(ng) do cols
+        @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
+            δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
+            Bj = view(ops.L2L, (j-1)*N+1:j*N, :)
+            r0 = (j - 1) * 4N
+            for a in 1:3
+                mul!(view(out, r0+(a-1)*N+1:r0+a*N, cols), Bj, view(G, (a-1)*N+1:a*N, cols), T(α), false)
+            end
+            for g in cols, i in 1:N
+                W[i, g] = 2 * G[3N+i, g] - 2 * (δ̂[1] * G[i, g] + δ̂[2] * G[N+i, g] + δ̂[3] * G[2N+i, g])
+            end
+            mul!(view(out, r0+3N+1:r0+4N, cols), Bj, view(W, :, cols), T(α), false)
         end
-        for g in 1:ng, i in 1:N
-            W[i, g] = 2 * G[3N+i, g] - 2 * (δ̂[1] * G[i, g] + δ̂[2] * G[N+i, g] + δ̂[3] * G[2N+i, g])
-        end
-        mul!(view(out, r0+3N+1:r0+4N, :), Bj, W, T(α), false)
     end
     return out
 end

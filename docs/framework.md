@@ -130,6 +130,29 @@ function is one shared boxed variable, and tasks race on it. Every output elemen
 written by exactly one task in a fixed order, so results are bitwise independent of
 the Julia thread count.
 
+The number of thread regions per matvec matters as much as the work in them on
+many-core nodes. A region spawns one task per thread and wakes the sleeping
+threads one by one; on a 96-core Genoa node waking a thread takes 0.3 ms, so a
+region costs 30 ms (21 µs on a 12-core M3 Max; `bench/threads.jl` measures it),
+and a matvec made of 340 regions took 14 s there against 0.3 s of work. The
+passes are therefore organised as few regions: one per level for S2M, one per
+level for the class-wise M2L of the harmonic methods (tasks take blocks of 32
+consecutive targets from a counter and do their own gather, product and scatter
+with per-task workspaces; the block size is fixed so that the chunking of the
+products, and hence the results, do not depend on the thread count), one for the
+evaluation. The products inside that region run with one BLAS thread (the region
+sets the count to one and restores it: many tasks calling a threaded BLAS serialise
+on its queue). The large products between regions (M2M, L2L, the pseudo-inverse
+transforms) go to BLAS with its own threads by default, which is faster than
+splitting them over Julia threads on the M3 Max (`docs/kifmm.md`); with
+`OPENBLAS_NUM_THREADS=1` they are split over Julia threads instead
+(`column_blocks`), the configuration for a node whose Julia threads are kept
+spinning (`JULIA_THREAD_SLEEP_THRESHOLD=infinite`, a region then costs 3 ms on the
+Genoa node) and where OpenBLAS's own threads would be starved by them. The
+per-offset M2L of the circle and non-covariant methods and the FFTW transforms
+of the cube method (planned with the Julia thread count, each execution
+spawning its tasks) still take a region per offset and per transform.
+
 ## Sources and targets
 
 A source is a point with a density whose *type* says what singularity sits there:

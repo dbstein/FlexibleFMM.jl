@@ -504,33 +504,56 @@ end
 
 # ---- the class-wise translation of a level ----
 #
-# For each of the 34 classes, the pairs of all its offsets are gathered with the
-# source permutations into one matrix (one column per pair and scalar expansion; the
-# Stokes method has four, laid out as consecutive columns), translated by the class
+# For each of the 34 classes, the pairs of its offsets are gathered with the source
+# permutations into one matrix (one column per pair and scalar expansion; the Stokes
+# method has four, laid out as consecutive columns), translated by the class
 # representative in one GEMM (two for the low-rank form) and scattered with the
 # target permutations, plus the Stokes coupling Ψ̂ += o·Φ with each pair's own
 # offset. The pairs of a class are listed in the interaction list's target order
 # (`ClassList`, built once per state and level; the device plan cuts its chunks from
-# the same lists) and taken in chunks that fit the state's workspace; the gather is
-# threaded over columns and the scatter over targets, whose pairs are consecutive,
-# so that the tasks write disjoint columns. (The scatter used to be split by rows
-# at degree boundaries, which left all but seven threads idle at p = 6.)
+# the same lists). The level runs as ONE thread region: the targets are cut into
+# blocks of `_TARGET_BLOCK` consecutive targets, and each task takes blocks from a
+# counter and, per class, gathers the block's pairs (a contiguous range of the
+# class list) into its own workspace, applies the representative, and scatters into
+# the block's targets, which no other task touches. The products run with a single
+# BLAS thread (the region sets the count to one and restores it): many tasks calling
+# a threaded BLAS serialise on its queue. A region per class and level (the first
+# version: 340 per matvec) cost 30 ms each on a 96-core node where waking a sleeping
+# thread takes 0.3 ms (`bench/threads.jl`), 10 s of a 14 s matvec. The block size is
+# fixed, not a function of the thread count, so that the chunking of the products and
+# hence the results do not depend on it.
+const _TARGET_BLOCK = 32
+const _TASK_COLUMNS = 512         # pairs per gather/product/scatter chunk of a task
+
 function m2l_level!(pL::AbstractMatrix, m::HarmonicMethod, ops::LevelOperators,
                     Mp::AbstractMatrix, il::InteractionList, off::Int, state::FMMState)
     nb = _nblocks(m)
     N = (m.p + 1)^2
     e = ops.extra
-    cap = size(state.work1, 2)
-    G = reshape(view(state.work1, 1:N*nb*cap), N, nb * cap)
-    Rw = reshape(view(state.work2, 1:N*nb*cap), N, nb * cap)
-    rmax = maximum(workspace_rows, e.reps)
-    work = rmax == 0 ? nothing : _lowrank_workspace(state, rmax, nb * cap)
+    nt = length(il.torder)
+    nt == 0 && return pL
     lists = _class_lists(state, il, e.sc.class, length(e.reps), off + 1)
-    for c in eachindex(e.reps)
-        cl = lists[c]
-        for a in 1:cap:length(cl)
-            _class_translate!(pL, Mp, e.reps[c], e, cl, a, min(a + cap - 1, length(cl)), G, Rw, work, ops.m2l_scale, N, Val(nb))
+    rmax = maximum(workspace_rows, e.reps)
+    ws = _task_workspaces(state, N, nb * _TASK_COLUMNS, rmax)
+    nblocks = cld(nt, _TARGET_BLOCK)
+    next = Threads.Atomic{Int}(1)
+    nblas = BLAS.get_num_threads()
+    nblas > 1 && BLAS.set_num_threads(1)
+    try
+        Threads.@threads :dynamic for t in 1:length(ws)         # one task per workspace
+            G, Rw, work = ws[t]
+            while true
+                blk = Threads.atomic_add!(next, 1)
+                blk > nblocks && break
+                g1 = (blk - 1) * _TARGET_BLOCK + 1
+                g2 = min(blk * _TARGET_BLOCK, nt)
+                for c in eachindex(e.reps)
+                    _translate_targets!(pL, Mp, e.reps[c], e, lists[c], g1, g2, G, Rw, work, ops.m2l_scale, N, Val(nb))
+                end
+            end
         end
+    finally
+        nblas > 1 && BLAS.set_num_threads(nblas)
     end
     return pL
 end
@@ -545,20 +568,40 @@ function _class_lists(state::FMMState, il::InteractionList, class::Vector{Int}, 
     end
     return v::Vector{ClassList}
 end
-# pairs a:b of the class list, one chunk: gather, GEMM, scatter
-function _class_translate!(pL, Mp, rep, e::HarmonicExtras, cl::ClassList, a::Int, b::Int, G, Rw, work, α, N, ::Val{nb}) where {nb}
-    sc = e.sc
-    ncol = b - a + 1
-    Threads.@threads :dynamic for q in 1:ncol                # dynamic: composes with an outer threaded loop
-        @inbounds begin
-            f = Int(cl.f[a+q-1])
-            _gather_column!(G, Mp, Int(cl.src[a+q-1]), sc.idx[f], sc.sgn[f], q, N, Val(nb))
-        end
+# one workspace per task: the gathered columns, the product, and the low-rank
+# intermediate (`rows × cols` each, `r × cols` for the last; `r = 0`: none)
+function _task_workspaces(state::FMMState{S}, rows::Int, cols::Int, r::Int) where {S}
+    key = (:task_workspaces, rows, cols, r)
+    v = get(state.scratch, key, nothing)
+    if v === nothing
+        W = r == 0 ? Nothing : Matrix{S}
+        v = Tuple{Matrix{S},Matrix{S},W}[(Matrix{S}(undef, rows, cols), Matrix{S}(undef, rows, cols),
+                                          r == 0 ? nothing : Matrix{S}(undef, r, cols)) for _ in 1:Threads.nthreads()]
+        state.scratch[key] = v
     end
-    apply!(view(Rw, :, 1:nb*ncol), rep, view(G, :, 1:nb*ncol), α, work)
-    r1, r2 = _run_range(cl, a, b)
-    Threads.@threads :dynamic for r in r1:r2                 # one target per run: disjoint columns of pL
-        _scatter_target!(pL, Rw, sc, e.offs, cl, r, a, b, N, Val(nb))
+    return v::Vector{<:Tuple{Matrix{S},Matrix{S},Union{Nothing,Matrix{S}}}}
+end
+# the pairs of class list `cl` whose targets are g1:g2 of the level's target order,
+# in chunks that fit the task's workspace: gather, product, scatter
+function _translate_targets!(pL, Mp, rep, e::HarmonicExtras, cl::ClassList, g1::Int, g2::Int, G, Rw, work, α, N, ::Val{nb}) where {nb}
+    r1, r2 = _target_runs(cl, g1, g2)
+    r1 > r2 && return pL
+    a = Int(cl.ptr[r1])
+    b = Int(cl.ptr[r2+1]) - 1
+    cap = size(G, 2) ÷ nb
+    sc = e.sc
+    for ca in a:cap:b
+        cb = min(ca + cap - 1, b)
+        ncol = cb - ca + 1
+        @inbounds for q in 1:ncol
+            f = Int(cl.f[ca+q-1])
+            _gather_column!(G, Mp, Int(cl.src[ca+q-1]), sc.idx[f], sc.sgn[f], q, N, Val(nb))
+        end
+        apply!(view(Rw, :, 1:nb*ncol), rep, view(G, :, 1:nb*ncol), α, work)
+        s1, s2 = _run_range(cl, ca, cb)
+        for r in s1:s2
+            _scatter_target!(pL, Rw, sc, e.offs, cl, r, ca, cb, N, Val(nb))
+        end
     end
     return pL
 end

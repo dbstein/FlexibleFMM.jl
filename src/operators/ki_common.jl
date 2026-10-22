@@ -49,13 +49,21 @@ Base.Matrix(P::FactoredPinv) = P.V * Diagonal(P.invS) * P.Uh
 
 `out = α·P·x` for a vector or matrix `x`, using `work` (at least `rank × size(x, 2)`).
 """
-function apply!(out::AbstractVecOrMat, P::FactoredPinv{T}, x::AbstractVecOrMat, work::AbstractVecOrMat, α=true) where {T}
-    r = rank(P)
-    n = size(x, 2)
-    tmp = x isa AbstractVector ? view(work, 1:r) : view(work, 1:r, 1:n)
+function apply!(out::AbstractVector, P::FactoredPinv{T}, x::AbstractVector, work::AbstractVecOrMat, α=true) where {T}
+    tmp = view(work, 1:rank(P))
     mul!(tmp, P.Uh, x)
     lmul!(Diagonal(P.invS), tmp)
     mul!(out, P.V, tmp, T(α), false)
+    return out
+end
+function apply!(out::AbstractMatrix, P::FactoredPinv{T}, x::AbstractMatrix, work::AbstractMatrix, α=true) where {T}
+    r = rank(P)
+    column_blocks(size(x, 2)) do cols
+        tmp = view(work, 1:r, cols)
+        mul!(tmp, P.Uh, view(x, :, cols))
+        lmul!(Diagonal(P.invS), tmp)
+        mul!(view(out, :, cols), P.V, tmp, T(α), false)
+    end
     return out
 end
 
