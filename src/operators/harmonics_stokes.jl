@@ -127,26 +127,35 @@ function _stokes_dense_operators(ops::LevelOperators, N::Int)
     end
     return M2M, L2L
 end
+# The block products as four GEMMs per level each: M2M applies the scalar M2M
+# (N × 8N) to the stacked children's component a (the fourth with the coupling
+# folded in), L2L applies the scalar L2L (8N × N) to the parents' component a and
+# the children's fourth component is the combination 2·(L2L·G₄) − 2·δ̂·(L2L·G₁..₃).
+# (One product per child and component, 32 per level, cost 50 ms per level on a
+# 96-core node where every threaded BLAS call wakes its threads.)
 function m2m_apply!(out, m::StokesHarmonics, ops::LevelOperators, B, α, work)
     N = (m.p + 1)^2
     ng = size(B, 2)
-    X = reshape(view(work, 1:4N*ng), N, 4ng)
+    X = reshape(view(work, 1:8N*ng), 8N, ng)          # the children's component a, stacked
     T = eltype(ops.M2M)
-    fill!(out, zero(eltype(out)))
+    offs = child_offsets(Val(3))
     column_blocks(ng) do cols                                  # the tasks own disjoint columns of X and out
-        @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
-            δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
-            r0 = (j - 1) * 4N
-            for g in cols, i in 1:N
-                X[i, g] = B[r0+i, g]
-                X[i, ng+g] = B[r0+N+i, g]
-                X[i, 2ng+g] = B[r0+2N+i, g]
-                X[i, 3ng+g] = B[r0+3N+i, g] / 2 + δ̂[1] * B[r0+i, g] + δ̂[2] * B[r0+N+i, g] + δ̂[3] * B[r0+2N+i, g]
+        for a in 1:4
+            @inbounds for (j, δ) in enumerate(offs)
+                δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
+                r0 = (j - 1) * 4N
+                x0 = (j - 1) * N
+                if a < 4
+                    for g in cols, i in 1:N
+                        X[x0+i, g] = B[r0+(a-1)*N+i, g]
+                    end
+                else
+                    for g in cols, i in 1:N
+                        X[x0+i, g] = B[r0+3N+i, g] / 2 + δ̂[1] * B[r0+i, g] + δ̂[2] * B[r0+N+i, g] + δ̂[3] * B[r0+2N+i, g]
+                    end
+                end
             end
-            Aj = view(ops.M2M, :, (j-1)*N+1:j*N)
-            for a in 1:4
-                mul!(view(out, (a-1)*N+1:a*N, cols), Aj, view(X, :, (a-1)*ng .+ cols), T(α), true)
-            end
+            mul!(view(out, (a-1)*N+1:a*N, cols), ops.M2M, view(X, :, cols), T(α), false)
         end
     end
     return out
@@ -154,25 +163,28 @@ end
 function l2l_apply!(out, m::StokesHarmonics, ops::LevelOperators, G, α, work)
     N = (m.p + 1)^2
     ng = size(G, 2)
-    W = reshape(view(work, 1:N*ng), N, ng)
+    R = reshape(view(work, 1:8N*4ng), 8N, 4ng)        # R[:, (a-1)·ng + g] = L2L · G_a[:, g]
     T = eltype(ops.L2L)
+    offs = child_offsets(Val(3))
     column_blocks(ng) do cols
-        @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
+        for a in 1:4
+            mul!(view(R, :, (a-1)*ng .+ cols), ops.L2L, view(G, (a-1)*N+1:a*N, cols), T(α), false)
+        end
+        @inbounds for (j, δ) in enumerate(offs)
             δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
-            Bj = view(ops.L2L, (j-1)*N+1:j*N, :)
             r0 = (j - 1) * 4N
-            for a in 1:3
-                mul!(view(out, r0+(a-1)*N+1:r0+a*N, cols), Bj, view(G, (a-1)*N+1:a*N, cols), T(α), false)
-            end
+            x0 = (j - 1) * N
             for g in cols, i in 1:N
-                W[i, g] = 2 * G[3N+i, g] - 2 * (δ̂[1] * G[i, g] + δ̂[2] * G[N+i, g] + δ̂[3] * G[2N+i, g])
+                r1 = R[x0+i, g]; r2 = R[x0+i, ng+g]; r3 = R[x0+i, 2ng+g]
+                out[r0+i, g] = r1
+                out[r0+N+i, g] = r2
+                out[r0+2N+i, g] = r3
+                out[r0+3N+i, g] = 2 * R[x0+i, 3ng+g] - 2 * (δ̂[1] * r1 + δ̂[2] * r2 + δ̂[3] * r3)
             end
-            mul!(view(out, r0+3N+1:r0+4N, cols), Bj, view(W, :, cols), T(α), false)
         end
     end
     return out
 end
-
 function rescale(ref::LevelOperators{T,R,<:HarmonicExtras{R},<:HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}
     λ = R(w) / ref.width
     return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,

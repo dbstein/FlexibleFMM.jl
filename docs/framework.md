@@ -157,8 +157,13 @@ the working ones in the evaluation, 0.72 → 1.2 s). The transforms of the cube
 method's spectral translation are planned per box, single-threaded and
 unaligned, and run box by box in one region per transform (planned over the
 whole level with FFTW's threading, each execution spawned its tasks several
-times: the cube method's down pass took 48 s on the Genoa node). The per-offset
-M2L of the circle and non-covariant methods still takes a region per offset.
+times: the cube method's down pass took 48 s on the Genoa node). The per-offset M2L of the circle and non-covariant methods still takes a region
+per offset. With all of this, and the near-field loop vectorised (its accumulation
+reassociated, `kernels.jl`), the Genoa node runs the Stokes harmonic matvec at 10⁶
+sphere points, `p = 6`, 600 per leaf, in 0.20 s with spinning threads and one BLAS
+thread (up 50, down 36, self 116 ms) and 0.50 s in the default configuration,
+where the sleeping threads' wake-ups (one region per level) and OpenBLAS's
+per-call wake-ups are the difference; it started at 14 s.
 
 ## Sources and targets
 

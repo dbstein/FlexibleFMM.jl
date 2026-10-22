@@ -137,7 +137,7 @@ end
     @test M2M[1:N, 1:N] == ops.M2M[:, 1:N] && M2M[3N+1:4N, 3N+1:4N] == ops.M2M[:, 1:N] / 2
     ng = 5
     B = randn(rng, 32N, ng); G = randn(rng, 4N, ng)
-    work = zeros(4N, ng)
+    work = zeros(4N, 8ng)                                     # the children's block, as the driver provides
     @test m2m_apply!(zeros(4N, ng), m, ops, B, 0.7, work) ≈ 0.7 * M2M * B
     @test l2l_apply!(zeros(32N, ng), m, ops, G, 1.3, work) ≈ 1.3 * L2L * G
     # the views the driver hands to the GEMMs are strided

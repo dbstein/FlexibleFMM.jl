@@ -10,13 +10,13 @@ using FlexibleFMM: level_operators, s2m!, l2t, multipole_field, expansion_length
 function m2m_product(m, ops, stacked::AbstractVector)
     Nm = multipole_length(m)
     out = zeros(eltype(stacked), Nm, 1)
-    m2m_apply!(out, m, ops, reshape(stacked, :, 1), 1, zeros(eltype(stacked), Nm, 1))
+    m2m_apply!(out, m, ops, reshape(stacked, :, 1), 1, zeros(eltype(stacked), Nm, 1 << dimension(m)))   # work: the children's block
     return vec(out)
 end
 function l2l_product(m, ops, pL::AbstractVector)
     pll = partial_local_length(m)
     out = zeros(eltype(pL), (1 << dimension(m)) * pll, 1)
-    l2l_apply!(out, m, ops, reshape(pL, :, 1), 1, zeros(eltype(pL), pll, 1))
+    l2l_apply!(out, m, ops, reshape(pL, :, 1), 1, zeros(eltype(pL), pll, 1 << dimension(m)))
     return vec(out)
 end
 

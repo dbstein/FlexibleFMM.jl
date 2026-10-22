@@ -108,7 +108,8 @@ function m2l_level! end
 ng`, to the parents' multipoles) and `out = α·L2L·G` (the parents' partial locals to
 the stacked children's). The defaults multiply by the matrices; a method whose
 operators have block structure overrides them (`StokesHarmonics`). `work` has at
-least `Nm·ng` entries.
+least `2^D·Nm·ng` entries, the size of the children's block (the driver passes the
+state's work buffer, `rows × max level size`).
 """
 function m2m_apply!(out, m::AbstractMethod, ops::LevelOperators, B, α, work)
     T = eltype(ops.M2M)
