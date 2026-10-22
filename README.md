@@ -116,7 +116,8 @@ cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
   operator checks on all 40 far offsets, direct-sum and analytic (ring) comparisons,
   determinism, allocation and ForwardDiff tests
 - `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl N=1000000`
-  (kernel, method, distribution and `ppl` options in its header); with
+  (kernel, method, distribution and `ppl` options in its header; `cores=` for the
+  per-core rates, half the hardware threads by default); with
   `device=metal` from the `bench/gpu` environment (`julia --project=bench/gpu -t auto
   bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case;
   `device=ka_cpu` runs the same passes on KernelAbstractions' CPU backend;

@@ -13,6 +13,32 @@ using FlexibleFMM, StaticArrays, Random, LinearAlgebra
 
 parse_kv(args) = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(args, "="))
 
+# the threading configuration, for the report's header: a run's thread counts and
+# the core kernels OpenBLAS selected for the machine (its DYNAMIC_ARCH choice;
+# a mismatch there, or BLAS threads far above the cores a job was given, shows
+# up as GEMM phases many times slower than on another node)
+function config_line()
+    core = try
+        jll = Base.require(Base.PkgId(Base.UUID("4536629a-c528-5b80-bd46-f80d51c5b363"), "OpenBLAS_jll"))
+        dl = Base.require(Base.PkgId(Base.UUID("8f399da3-3557-5675-b5ff-fb832c97cbdb"), "Libdl"))
+        fp = dl.dlsym(dl.dlopen(jll.libopenblas), :openblas_get_corename64_)
+        unsafe_string(ccall(fp, Ptr{Cchar}, ()))
+    catch
+        "unknown"
+    end
+    fftw = try
+        Base.require(Base.PkgId(Base.UUID("7a1cc6ca-52ef-59f5-83cd-3a7055c09341"), "FFTW")).get_num_threads()
+    catch
+        -1
+    end
+    env(k) = get(ENV, k, "unset")
+    return string("CPU ", Sys.CPU_NAME, " (", Sys.CPU_THREADS, " hardware threads), Julia threads ", Threads.nthreads(),
+                  ", GC threads ", Threads.ngcthreads(), ", BLAS threads ", BLAS.get_num_threads(), " (OpenBLAS core ", core,
+                  "), FFTW threads ", fftw, " (the package plans with the Julia thread count); OPENBLAS_THREAD_TIMEOUT ",
+                  env("OPENBLAS_THREAD_TIMEOUT"), ", OMP_NUM_THREADS ", env("OMP_NUM_THREADS"), ", OMP_WAIT_POLICY ",
+                  env("OMP_WAIT_POLICY"))
+end
+
 uniform(rng, N, ::Val{D}) where {D} = [rand(rng, SVector{D,Float64}) for _ in 1:N]
 circle(rng, N, ::Val{2}) = [0.5 .+ 0.4 * SVector(cos(t), sin(t)) for t in 2π .* rand(rng, N)]
 circle(rng, N, ::Val{3}) = [SVector(0.5, 0.5, 0.5) + 0.4 * normalize(randn(rng, SVector{3,Float64})) for _ in 1:N]

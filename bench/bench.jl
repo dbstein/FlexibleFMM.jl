@@ -37,15 +37,16 @@
 # applies the operator to new densities on the same points; "with tree" adds the
 # construction. Evaluation at separate targets is not timed: it is not the usual
 # use of an FMM, and its cost is the near field of the leaves the targets land in.
-# Rates are thousands of points per second per core, with cores = half the hardware
-# threads as in the Python README.
+# Rates are thousands of points per second per core, with cores=N the cores the run
+# has (default: half the hardware threads, the Python README's assumption of a
+# hyperthreaded machine; on a cluster without SMT pass cores=Sys.CPU_THREADS). It
+# only normalises the printed rate: the threads used are those Julia was started
+# with, shown with the rest of the threading configuration in the first line.
 using FlexibleFMM: upward_pass!, downward_pass!, FMMState, expansion_eltype, nlevels, near_kernel
 using Printf
 include(joinpath(@__DIR__, "common.jl"))
 
-const CORES = max(1, Sys.CPU_THREADS ÷ 2)
-
-kpsc(n, t) = n / t / CORES / 1000
+kpsc(n, t, cores) = n / t / cores / 1000
 
 # Σ_{j ≠ i} over all sources at the sources `sub`, threaded (the device rows' reference)
 function direct_subset(K, pts, τ, sub)
@@ -70,7 +71,7 @@ cvt(::Type{T}, x::Stresslet) where {T} = Stresslet(cvt(T, x.f), cvt(T, x.ν))
 cvt(::Type{T}, x::Doublet) where {T} = Doublet(cvt(T, x.g))
 cvt(::Type{T}, x::Tuple) where {T} = map(y -> cvt(T, y), x)
 
-function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts64=nothing, τ64=nothing)
+function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts64=nothing, τ64=nothing, cores=1)
     N = length(pts)
     T = eltype(eltype(pts))
     nw = min(N, 4000)
@@ -95,7 +96,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         t_down = minimum(@elapsed(downward_pass!(st, f)) for _ in 1:3)
         t_self = minimum(@elapsed(evaluate_at_sources(f, st)) for _ in 1:3)
         t_mv = t_up + t_down + t_self
-        @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | first %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_first 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv)
+        @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | first %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_first 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv, cores) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv, cores)
     else
         # the device only: the plan from the tree, no CPU pass; the error against direct
         # sums over all sources at nerr of them
@@ -117,10 +118,10 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
     return nothing
 end
 
-function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr)
+function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores)
     rng = MersenneTwister(1)
-    println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES,
-            ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
+    println(config_line())
+    println("cores assumed for the rates: ", cores, ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
     for dname in dists
         pts64 = GENERATORS[dname](rng, N, Val(dim))
         pts = SVector{dim,T}.(pts64)
@@ -131,7 +132,7 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr)
             m === nothing && continue                            # a method not for this kernel
             τ64 = density(rng, kernel_kind(kspec), K64, N, Val(dim))
             τ = T === Float64 ? τ64 : map(x -> cvt(T, x), τ64)
-            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64)
+            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64, cores=cores)
         end
     end
 end
@@ -158,4 +159,5 @@ precision = get(args, "precision", device == "metal" ? "float32" : "float64")
 precision in ("float32", "float64") || error("precision must be float32 or float64")
 T = precision == "float32" ? Float32 : Float64
 nerr = parse(Int, get(args, "nerr", "500"))
-main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr)
+cores = parse(Int, get(args, "cores", string(max(1, Sys.CPU_THREADS ÷ 2))))
+main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores)

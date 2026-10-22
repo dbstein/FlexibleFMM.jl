@@ -55,8 +55,8 @@ precision in ("float32", "float64") || error("precision must be float32 or float
 TP = precision == "float32" ? Float32 : Float64         # our precision (the libraries run in Float64)
 nerr = parse(Int, get(args, "nerr", "2000"))
 rng = MersenneTwister(1)
-println("Julia threads ", Threads.nthreads(), ", OMP_NUM_THREADS ", get(ENV, "OMP_NUM_THREADS", "unset"), ", dim ", dim,
-        ", N ", N, ", ppl ", ppl, device == "cpu" ? "" : ", ours on $device in $TP")
+println(config_line())
+println("dim ", dim, ", N ", N, ", ppl ", ppl, device == "cpu" ? "" : ", ours on $device in $TP")
 
 mat(v) = reduce(hcat, v)                                 # D × n matrix for the libraries
 unmat(M) = [SVector{size(M, 1)}(c) for c in eachcol(M)]
