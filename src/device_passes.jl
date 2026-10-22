@@ -9,13 +9,18 @@
 # arrays, because device GEMMs on views fall back to slow generic code.
 
 """
-    DevicePlan(fmm, to=identity)
+    DevicePlan(fmm, to=identity; tol=0)
 
 Everything a device needs for the full matvec of a kernel-independent cube (or
 circle) method: the evaluation data (`DeviceEvaluator`), the per-level operators
 (folded M2M and L2L, the pseudo-inverse factors, the class operators of the dense
 translations), the per-level node lists, the class pair lists grouped by target,
-the signed permutations of the far offsets, and the work buffers.
+the signed permutations of the far offsets, and the work buffers. With `tol > 0`
+the class operators of the cube method are replaced by their low-rank factors
+(`class_factors`: singular values above `tol` times the largest), two GEMMs per
+chunk instead of one, `4·n·k` flops per pair instead of `2·n²`; `tol` should sit
+below the accuracy of the order used (`1e-8` for Laplace at `p = 8`, `1e-6` for
+Stokes).
 """
 # The pairs of one class of one level, grouped by target, in a chunk of `chunk`
 # columns (padded with dummy pairs that no target reads): the gather fills a fixed
@@ -44,7 +49,9 @@ struct DevicePlan{D,E,M,V,VI,MI,MB}
     Uh_up::Vector{M}; invS_up::Vector{V}; V_up::Vector{M}
     Uh_dn::Vector{M}; invS_dn::Vector{V}; V_dn::Vector{M}
     pinv_scale::Vector{Float64}
-    M2Lc::Vector{Vector{M}}; m2l_scale::Vector{Float64}     # class operators per level
+    M2Lc::Vector{Vector{M}}; m2l_scale::Vector{Float64}     # class operators per level (dense, or A of A·Bt)
+    M2Lb::Vector{Vector{M}}                                  # Bt factors per level (empty vectors: dense)
+    Zc::Vector{M}                                            # per class: Bt·Gc work (rank × chunk)
     idx::MI; inv::MI; sgn::MB                                # nm × nfar signed permutations (P x)[idx] = sgn x
     chunks::Vector{Vector{ClassChunk{VI}}}                  # per level: the pairs by class in fixed-size chunks
     chunk::Int
@@ -56,7 +63,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB}
     Gc::M; Yc::M                                             # class gather and GEMM output (max pairs)
 end
 
-function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
+function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0) where {D,T}
     tree = f.tree
     m = f.method
     m isa AbstractKernelIndependent || throw(ArgumentError("the device passes are written for the kernel-independent methods"))
@@ -75,17 +82,24 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
     l3 = min(3, L)
     a = homogeneity(K)
     M2Lc = Vector{Vector{typeof(to(zeros(TO, 1, 1)))}}(undef, L)
+    M2Lb = [typeof(to(zeros(TO, 1, 1)))[] for _ in 1:L]
     m2l_scale = ones(L)
+    ranks = Int[]
     if m isa CubeKernelIndependent
         e3 = f.ops[l3].extra
-        sc, opsc = class_operators(K, e3.small, e3.embed, f.ops[l3].width, e3.p)
+        build(e, w) = tol > 0 ? (r = class_factors(K, e.small, e.embed, w, e.p, tol); (r[1], r[2], r[3], r[4])) :
+                                (r = class_operators(K, e.small, e.embed, w, e.p); (r[1], r[2], Matrix{TO}[], Int[]))
+        sc, opsc, btc, ranks = build(e3, f.ops[l3].width)
         dc = [to(Matrix{TO}(A)) for A in opsc]
+        db = [to(Matrix{TO}(B)) for B in btc]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                el = f.ops[l].extra
-                M2Lc[l] = [to(Matrix{TO}(A)) for A in class_operators(K, el.small, el.embed, f.ops[l].width, el.p)[2]]
+                _, ol, bl, _ = build(f.ops[l].extra, f.ops[l].width)
+                M2Lc[l] = [to(Matrix{TO}(A)) for A in ol]
+                M2Lb[l] = [to(Matrix{TO}(B)) for B in bl]
             else
                 M2Lc[l] = dc
+                M2Lb[l] = db
                 m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
             end
         end
@@ -147,7 +161,7 @@ function DevicePlan(f::FMM{D,T}, to=identity) where {D,T}
         [to(Matrix{TO}(f.ops[l].extra.P_down.Uh)) for l in 1:L], [to(Vector{R}(f.ops[l].extra.P_down.invS)) for l in 1:L],
         [to(Matrix{TO}(f.ops[l].extra.P_down.V)) for l in 1:L],
         [Float64(f.ops[l].extra.pinv_scale) for l in 1:L],
-        M2Lc, m2l_scale, to(idx), to(inv), to(sgn), chunks, chunk,
+        M2Lc, m2l_scale, M2Lb, [mk(max(1, k), chunk) for k in (isempty(ranks) ? [1] : ranks)], to(idx), to(inv), to(sgn), chunks, chunk,
         mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),
         [mk(pml, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
         [mk(rank(f.ops[l].extra.P_up), max(1, length(f.s2m_nodes[l]))) for l in 1:L],
@@ -295,7 +309,13 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
         for ch in plan.chunks[l]
             Gc, Yc = plan.Gc, plan.Yc
             _class_gather!(backend, 256)(Gc, Mp, ch.src, ch.f, plan.idx, plan.sgn; ndrange=Nm * plan.chunk)
-            mul!(Yc, plan.M2Lc[l][ch.class], Gc)
+            if isempty(plan.M2Lb[l])
+                mul!(Yc, plan.M2Lc[l][ch.class], Gc)
+            else                                    # low-rank: A·(Bt·Gc)
+                Z = plan.Zc[ch.class]
+                mul!(Z, plan.M2Lb[l][ch.class], Gc)
+                mul!(Yc, plan.M2Lc[l][ch.class], Z)
+            end
             nt = length(ch.tgt)
             _class_scatter!(backend, 256)(pL, Yc, ch.tgt, ch.ptr, ch.f, plan.inv, plan.sgn, eltype(pL)(plan.m2l_scale[l]);
                                           ndrange=pll * nt)

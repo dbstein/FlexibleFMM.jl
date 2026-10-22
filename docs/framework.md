@@ -184,10 +184,15 @@ and `target_field` methods for the outputs it should support.
   M3 Max in Float32 at 10⁵ points, p = 8, 200 per leaf (`bench/gpu/metal_matvec.jl`):
   the matvec in 0.036 s for Laplace and 0.129 s for Stokes against 0.15 s and
   0.90 s on 12 CPU threads in Float32, with the CPU's accuracy against direct
-  sums. The plan (`docs/notes/gpu_plan.md`, `gpu_plan_delta.md`) has the CUDA
-  side, which is untested here, and the remaining items: the downward
-  pseudo-inverse on real leaves only, dual numbers through the device passes, and
-  chunking the operators at 10⁶ points.
+  sums. `DevicePlan(f, to; tol=1e-6)` replaces the class operators by low-rank
+  factors (`class_factors`: the far offsets see a smooth kernel, so the Stokes
+  operators of rank 889 compress to about 40 at `1e-6`), two GEMMs per chunk
+  instead of one: Stokes 0.129 → 0.086 s on Metal at the same Float32 accuracy
+  (at `1e-8` the factors keep Float32 noise and the path is slower; Laplace gains
+  little, its matvec being elsewhere). The plan (`docs/notes/gpu_plan.md`,
+  `gpu_plan_delta.md`) has the CUDA side, which is untested here, and the
+  remaining items: the downward pseudo-inverse on real leaves only, dual numbers
+  through the device passes, and chunking the operators at 10⁶ points.
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
   is the FMM with sources and targets swapped and the kernel transposed; position
   pullbacks need the gradient kernel in `s2m!`/`l2t`/near field.

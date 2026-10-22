@@ -29,3 +29,22 @@ rng = MersenneTwister(45)
     @test mrd(u, evaluate_at_sources(f, st)) < tol
     @test mrd(u, direct_self(K, pts, τ)) < 1e-4
 end
+
+@testset "device passes with low-rank class operators, $(name)" for (name, K, dens, m, tol, errtol) in (
+        ("Laplace 3D, tol 1e-8", Laplace3D(), n -> randn(rng, n), CubeKernelIndependent{3}(Laplace3D(); p=8), 1e-8, 1e-7),
+        ("Stokes 3D, tol 1e-6", Stokeslet3D(),
+         n -> [(randn(rng, P3), Stresslet(randn(rng, P3), normalize(randn(rng, P3))), Doublet(randn(rng, P3))) for _ in 1:n],
+         CubeKernelIndependent{3}(Stokeslet3D(); p=8), 1e-6, 1e-5))
+    N = 4000
+    pts = uniform_points3(rng, N)
+    τ = dens(N)
+    f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    plan = DevicePlan(f; tol=tol)
+    @test !isempty(plan.M2Lb[3]) && all(size(B, 1) < size(B, 2) ÷ 2 for B in plan.M2Lb[3])   # ranks well below n
+    ds = (sources=st.sources, τ=st.τ)
+    u = similar(evaluate_at_sources(f, st))
+    device_matvec!(u, plan, ds)
+    @test mrd(u, evaluate_at_sources(f, st)) < errtol       # the compression sits below the method's accuracy
+    @test mrd(u, direct_self(K, pts, τ)) < 10errtol
+end

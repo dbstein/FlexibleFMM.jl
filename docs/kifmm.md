@@ -185,6 +185,24 @@ M3 Max in Float32, the libraries still on the CPU in Float64): Laplace cube 8 in
 (`2e-5`, the same at `p = 6, 8, 10`). Helmholtz stays on the CPU on Metal, which
 has no complex GEMM.
 
+Three cheap measured gains from the bempp/kifmm study (`docs/notes/kifmm_report.md`):
+the excluded source of the near field is masked rather than skipped, which keeps
+the body branch-free (Stokes self evaluation 210 → 136 ms at 10⁵ points); on
+Apple silicon, forwarding BLAS to Accelerate (`BLAS.lbt_forward` on the
+Accelerate framework with the ILP64 suffix, as `AppleAccelerate.jl` does; the
+package itself cannot be loaded as is, its FFT extension rejects our 3D tables)
+takes the Laplace matvec from 0.33 to 0.20 s and Stokes from 1.50 to 1.03 s, the
+GEMMs being 2× faster and OpenBLAS's spinning threads no longer competing with
+the Julia threads; and a reciprocal square root by estimate and Newton steps
+gains nothing in Float64. The compressed translations of kifmm were measured on
+our operators: the far offsets see a smooth kernel, so at `p = 8` the per-offset
+ranks are 25 (Laplace) and 69 (Stokes) at `1e-8` and 9 and 34 at `1e-6`, against
+296 and 889, while the shared basis of all offsets barely compresses (250 and
+776 at `1e-8`); on the CPU the compressed flops equal our half-spectrum Hadamard
+flops, so the gain would be the GEMM-to-Hadamard rate ratio only, and the path
+is used on the GPU instead (`DevicePlan(…; tol)`), where it replaces the dense
+class products.
+
 Two measured non-gains, recorded so they are not retried blindly: reshaping the
 near field to run a chunk of targets in lanes against each source gains 1.3–1.4×
 in isolation (the loops are bound by the square root and division on 2-wide

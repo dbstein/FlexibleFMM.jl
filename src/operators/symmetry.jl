@@ -149,3 +149,23 @@ function check_symmetry_classes(K, ::Val{D}, p::Int, d::Real, w::Real; rtol=1e-1
     worst <= rtol || throw(ArgumentError("the symmetry classes do not reproduce the translation operators (error $worst)"))
     return worst
 end
+
+"""
+    class_factors(K, small, embed, w, p, tol) -> (SymmetryClasses, A, Bt, ranks)
+
+Low-rank factors `M2L_rep ≈ A·Bt` of the class representatives (truncated SVD
+keeping the singular values above `tol` times the largest of the representative),
+so that a translation costs `4·n·k` flops instead of `2·n²`. The far offsets of a
+cube lattice see a smooth kernel: at `p = 8` the Stokes operators (n = 889) have
+ranks about 40 at `1e-6` and 80 at `1e-8`, Laplace (n = 296) 13 and 26.
+"""
+function class_factors(K, small::AbstractVector{SVector{D,R}}, embed::Vector{Int}, w::R, p::Int, tol::Real) where {D,R}
+    sc, ops = class_operators(K, small, embed, w, p)
+    A = Matrix{eltype(ops[1])}[]; Bt = similar(A); ranks = Int[]
+    for M in ops
+        F = svd(M)
+        k = max(1, count(σ -> σ > tol * F.S[1], F.S))
+        push!(A, F.U[:, 1:k] * Diagonal(F.S[1:k])); push!(Bt, Matrix(F.Vt[1:k, :])); push!(ranks, k)
+    end
+    return sc, A, Bt, ranks
+end

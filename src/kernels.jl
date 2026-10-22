@@ -334,9 +334,9 @@ end
 
 # Accumulates Σ_{i ≠ skip} target_field(K, sources[i], t, τ[i], out) onto `acc`.
 @inline function _direct_target(K, sources, τ, t, skip::Int, acc, out)
-    @inbounds for i in eachindex(sources)
-        i == skip && continue
-        acc += target_field(K, sources[i], t, τ[i], out)
+    @inbounds @simd for i in eachindex(sources)
+        v = target_field(K, sources[i], t, τ[i], out)
+        acc += ifelse(i == skip, zero(v), v)      # masked, not skipped: the body stays branch-free
     end
     return acc
 end

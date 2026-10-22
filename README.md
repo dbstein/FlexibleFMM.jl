@@ -57,7 +57,11 @@ operators (root boxes are snapped to cached widths). Targets must lie inside the
 root box.
 
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
-points gives a single-precision tree, operators, expansions and output.
+points gives a single-precision tree, operators, expansions and output. On Apple
+silicon, forward BLAS to Accelerate before loading the package
+(`BLAS.lbt_forward("/System/Library/Frameworks/Accelerate.framework/Accelerate";
+clear=true, suffix_hint="\x1a\$NEWLAPACK\$ILP64")`): the 3D matvec is 1.5–1.7×
+faster than with OpenBLAS (`docs/kifmm.md`).
 
 The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArray)`
 (or `CuArray`) moves the operators and lists once, `device_matvec!` runs the
