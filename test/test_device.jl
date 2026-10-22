@@ -69,7 +69,8 @@ end
 end
 
 @testset "Int32 index storage with the identity mover" begin
-    pts = [rand(MersenneTwister(3), SVector{2,Float64}) for _ in 1:500]
+    rngi = MersenneTwister(3)
+    pts = [rand(rngi, SVector{2,Float64}) for _ in 1:500]
     f = FMM(KernelIndependent(Laplace2D(); nequiv=20), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
     dev = DeviceEvaluator(f)
     @test eltype(dev.colleagues) == Int32 && eltype(dev.plo) == Int32 && eltype(dev.point_node) == Int32
