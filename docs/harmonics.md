@@ -205,11 +205,16 @@ per offset referring to them; the harmonic methods' `m2l_level!` gathers the pai
 of a class with the source permutations (one column per pair and scalar expansion,
 four for Stokes), applies the representative in one GEMM per chunk, and scatters
 with the target permutations plus the Stokes coupling with each pair's own offset.
-The gather is threaded over columns and the scatter over rows in chunks aligned
-with the degree blocks, inside which every permutation acts (a chunk boundary
-splitting an `(n, m)` pair let two threads write one row; the test against the
-generic per-offset driver caught it). Build: 34 SVDs instead of 316; memory: 34
-operators instead of 316.
+The pairs of a class are listed in the interaction list's target order
+(`ClassList`, one pass over the by-target view per level, built once per state;
+the device plan cuts its chunks from the same lists). The gather is threaded over
+columns and the scatter over targets, whose pairs are consecutive, so that the
+tasks write disjoint columns of the partial locals. (The scatter was first split by
+rows in chunks aligned with the degree blocks, inside which every permutation
+acts: a chunk boundary splitting an `(n, m)` pair let two threads write one row,
+which the test against the generic per-offset driver caught; and at `p = 6` the
+seven degree blocks left all but seven threads idle on 64- and 96-core nodes.)
+Build: 34 SVDs instead of 316; memory: 34 operators instead of 316.
 
 Build time and memory of the 34 representatives (the per-offset build was 0.1–0.5 s
 dense and 10 s with the SVDs, 201–469 MB dense):

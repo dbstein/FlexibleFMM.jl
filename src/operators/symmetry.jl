@@ -177,6 +177,62 @@ function class_factors(K, small::AbstractVector{SVector{D,R}}, embed::Vector{Int
     return sc, A, Bt, ranks
 end
 
+"""
+    ClassList
+
+The pairs of one symmetry class on one level in the interaction list's target
+order: pair `q` has source node `src[q]` (global) and far offset `f[q]`; the pairs
+of one target are consecutive, run `r` being those of the level-local target
+`tgt[r]`, `ptr[r]:ptr[r+1]-1`. Built by `class_lists` for the class-wise
+translations of the CPU and of the device plan.
+"""
+struct ClassList
+    src::Vector{Int32}
+    f::Vector{Int32}
+    tgt::Vector{Int32}
+    ptr::Vector{Int32}
+end
+Base.length(cl::ClassList) = length(cl.src)
+
+"""
+    class_lists(il, class, nclass, lo) -> Vector{ClassList}
+
+The lists of all `nclass` classes of one level, from the by-target view of its
+interaction list in one pass (`class[f]` the class of far offset `f`, `lo` the
+level's first node).
+"""
+function class_lists(il::InteractionList, class::Vector{Int}, nclass::Int, lo::Int)
+    np = length(il.tsrc)
+    counts = zeros(Int, nclass)
+    @inbounds for q in 1:np
+        counts[class[il.tfar[q]]] += 1
+    end
+    src = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
+    fs = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
+    tgt = [Int32[] for _ in 1:nclass]
+    ptr = [Int32[] for _ in 1:nclass]
+    pos = zeros(Int, nclass)
+    cur = zeros(Int32, nclass)                     # the target of each class's open run
+    @inbounds for g in eachindex(il.torder)
+        t = Int32(il.torder[g] - lo + 1)
+        for q in il.tptr[g]:il.tptr[g+1]-1
+            c = class[il.tfar[q]]
+            k = (pos[c] += 1)
+            src[c][k] = il.tsrc[q]
+            fs[c][k] = il.tfar[q]
+            if cur[c] != t
+                push!(tgt[c], t); push!(ptr[c], k); cur[c] = t
+            end
+        end
+    end
+    for c in 1:nclass
+        push!(ptr[c], Int32(counts[c] + 1))
+    end
+    return [ClassList(src[c], fs[c], tgt[c], ptr[c]) for c in 1:nclass]
+end
+# the runs holding pairs a and b (a ≤ b ≤ length(cl))
+_run_range(cl::ClassList, a::Int, b::Int) = (searchsortedlast(cl.ptr, a), searchsortedlast(cl.ptr, b))
+
 # ---- the harmonic basis: the subgroup fixing the z axis ----
 #
 # Of the 48 signed permutations only the 16 that keep the z axis (D4h) act on the

@@ -22,7 +22,8 @@ the class operators of the cube method are replaced by their low-rank factors
 (`class_factors`: singular values above `tol` times the largest), two GEMMs per
 chunk instead of one, `4·n·k` flops per pair instead of `2·n²`; `tol` should sit
 below the accuracy of the order used (`1e-8` for Laplace at `p = 8`, `1e-6` for
-Stokes). `verbose` reports the build's stages (evaluator, operators, pair lists, uploads).
+Stokes). `verbose` prints the build's stages (evaluator, operators, pair lists, buffers
+and uploads).
 """
 # The pairs of one class of one level, grouped by target, in chunks of at most
 # `chunk` columns, each padded (with dummy pairs that no target reads) to the
@@ -76,6 +77,7 @@ end
 
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
                     verbose::Bool=false) where {D,T}
+    t_start = time()
     tree = f.tree
     m = f.method
     m isa AbstractKernelIndependent || m isa HarmonicMethod ||
@@ -193,7 +195,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         chunks = [[ClassChunk{VI}(c, len, to(src), to(fs), to(tg), to(ptr)) for (c, len, src, fs, tg, ptr) in host[l]] for l in 1:L]
     end
     t_up = @elapsed begin
-    mk(r, c) = to(zeros(TO, r, c))
+    proto = to(Matrix{TO}(undef, 0, 0))
+    mk(r, c) = fill!(similar(proto, r, c), zero(TO))      # zeroed on the device: no host zeros to page in and upload
     # the Stokes harmonic M2M and L2L in their dense form: one large GEMM per level
     # beats the eight child blocks with their kernels on a device
     dense_ops = nb == 4 ? Dict(l => _stokes_dense_operators(f.ops[l], Ns) for l in 1:L) : Dict{Int,Tuple{Matrix{TO},Matrix{TO}}}()
@@ -235,7 +238,12 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],
         Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens))
     end
-    verbose && @info "DevicePlan: evaluator $(round(t_dev, digits=3)) s, operators $(round(t_ops, digits=3)) s, pair lists $(round(t_lists, digits=3)) s, buffers and uploads $(round(t_up, digits=3)) s"
+    if verbose
+        t_all = time() - t_start
+        println("DevicePlan: evaluator ", round(t_dev, digits=3), " s, operators ", round(t_ops, digits=3), " s, pair lists ",
+                round(t_lists, digits=3), " s, buffers and uploads ", round(t_up, digits=3), " s, other ",
+                round(t_all - t_dev - t_ops - t_lists - t_up, digits=3), " s")
+    end
     return plan
 end
 
@@ -265,46 +273,22 @@ end
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{1}) = _accumulate_order!(col, ŷ, p, tb, _scaled_density(τ, s), m)
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{4}) = _stokes_accumulate_order!(col, (p + 1)^2, ŷ, p, tb, τ, s, m)
 
-# The chunks of one level on the host: the pairs of each class in target order,
-# straight from the list's by-target view (one pass), cut into chunks of at most
-# `chunk` pairs with their target runs, each padded to the power of two above its size.
+# The chunks of one level on the host: each class list (the pairs in target order,
+# `class_lists`) cut into chunks of at most `chunk` pairs with their target runs,
+# each padded to the power of two above its size.
 function _class_chunks_host(il::InteractionList, class::Vector{Int}, nclass::Int, chunk::Int, lo::Int)
-    np = length(il.tsrc)
-    counts = zeros(Int, nclass)
-    @inbounds for q in 1:np
-        counts[class[il.tfar[q]]] += 1
-    end
-    csrc = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
-    cf = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
-    ctg = [Int32[] for _ in 1:nclass]              # the target (level-local) of each run
-    cstart = [Int[] for _ in 1:nclass]              # the first pair of each run, within the class
-    pos = zeros(Int, nclass)
-    cur = zeros(Int32, nclass)
-    @inbounds for g in eachindex(il.torder)
-        t = Int32(il.torder[g] - lo + 1)
-        for q in il.tptr[g]:il.tptr[g+1]-1
-            c = class[il.tfar[q]]
-            p = (pos[c] += 1)
-            csrc[c][p] = il.tsrc[q]
-            cf[c][p] = il.tfar[q]
-            if cur[c] != t
-                push!(ctg[c], t); push!(cstart[c], p); cur[c] = t
-            end
-        end
-    end
     out = Tuple{Int,Int,Vector{Int32},Vector{Int32},Vector{Int32},Vector{Int32}}[]
-    for c in 1:nclass
-        n = counts[c]
+    for (c, cl) in enumerate(class_lists(il, class, nclass, lo))
+        n = length(cl)
         for a in 1:chunk:n
             b = min(a + chunk - 1, n)
             npk = b - a + 1
             len = max(64, nextpow(2, npk))
             src = fill(Int32(1), len); fs = fill(Int32(1), len)
-            src[1:npk] = view(csrc[c], a:b); fs[1:npk] = view(cf[c], a:b)
-            r1 = searchsortedlast(cstart[c], a)          # the run holding pair a
-            r2 = searchsortedlast(cstart[c], b)
-            tg = ctg[c][r1:r2]
-            ptr = Int32[max(cstart[c][r], a) - a + 1 for r in r1:r2]
+            src[1:npk] = view(cl.src, a:b); fs[1:npk] = view(cl.f, a:b)
+            r1, r2 = _run_range(cl, a, b)
+            tg = cl.tgt[r1:r2]
+            ptr = Int32[max(Int(cl.ptr[r]), a) - a + 1 for r in r1:r2]
             push!(ptr, Int32(npk + 1))
             push!(out, (c, len, src, fs, tg, ptr))
         end

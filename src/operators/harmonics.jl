@@ -509,9 +509,12 @@ end
 # Stokes method has four, laid out as consecutive columns), translated by the class
 # representative in one GEMM (two for the low-rank form) and scattered with the
 # target permutations, plus the Stokes coupling Ψ̂ += o·Φ with each pair's own
-# offset. Pairs are taken in chunks that fit the state's workspace; the gather is
-# threaded over columns and the scatter over rows (the target permutations keep
-# the rows of different threads apart).
+# offset. The pairs of a class are listed in the interaction list's target order
+# (`ClassList`, built once per state and level; the device plan cuts its chunks from
+# the same lists) and taken in chunks that fit the state's workspace; the gather is
+# threaded over columns and the scatter over targets, whose pairs are consecutive,
+# so that the tasks write disjoint columns. (The scatter used to be split by rows
+# at degree boundaries, which left all but seven threads idle at p = 6.)
 function m2l_level!(pL::AbstractMatrix, m::HarmonicMethod, ops::LevelOperators,
                     Mp::AbstractMatrix, il::InteractionList, off::Int, state::FMMState)
     nb = _nblocks(m)
@@ -522,57 +525,42 @@ function m2l_level!(pL::AbstractMatrix, m::HarmonicMethod, ops::LevelOperators,
     Rw = reshape(view(state.work2, 1:N*nb*cap), N, nb * cap)
     rmax = maximum(workspace_rows, e.reps)
     work = rmax == 0 ? nothing : _lowrank_workspace(state, rmax, nb * cap)
-    fs, qs = _class_columns(state, cap)
+    lists = _class_lists(state, il, e.sc.class, length(e.reps), off + 1)
     for c in eachindex(e.reps)
-        ncol = 0
-        for f in eachindex(e.sc.class)
-            e.sc.class[f] == c || continue
-            for q in pair_range(il, f)
-                ncol += 1
-                fs[ncol] = f; qs[ncol] = q
-                if ncol == cap
-                    _class_translate!(pL, Mp, il, off, e.reps[c], e, fs, qs, ncol, G, Rw, work, ops.m2l_scale, N, Val(nb))
-                    ncol = 0
-                end
-            end
+        cl = lists[c]
+        for a in 1:cap:length(cl)
+            _class_translate!(pL, Mp, e.reps[c], e, cl, a, min(a + cap - 1, length(cl)), G, Rw, work, ops.m2l_scale, N, Val(nb))
         end
-        ncol > 0 && _class_translate!(pL, Mp, il, off, e.reps[c], e, fs, qs, ncol, G, Rw, work, ops.m2l_scale, N, Val(nb))
     end
     return pL
 end
-function _class_columns(state::FMMState, cap::Int)
-    v = get(state.scratch, :class_columns, nothing)
-    if v === nothing || length(v[1]) < cap
-        v = (Vector{Int}(undef, cap), Vector{Int}(undef, cap))
-        state.scratch[:class_columns] = v
+# the class lists of the level starting at node `lo`, built once per state (they
+# depend on the tree and the classes only)
+function _class_lists(state::FMMState, il::InteractionList, class::Vector{Int}, nclass::Int, lo::Int)
+    key = (:class_lists, lo)
+    v = get(state.scratch, key, nothing)
+    if v === nothing
+        v = class_lists(il, class, nclass, lo)
+        state.scratch[key] = v
     end
-    return v::Tuple{Vector{Int},Vector{Int}}
+    return v::Vector{ClassList}
 end
-function _class_translate!(pL, Mp, il, off, rep, e::HarmonicExtras, fs, qs, ncol, G, Rw, work, α, N, ::Val{nb}) where {nb}
+# pairs a:b of the class list, one chunk: gather, GEMM, scatter
+function _class_translate!(pL, Mp, rep, e::HarmonicExtras, cl::ClassList, a::Int, b::Int, G, Rw, work, α, N, ::Val{nb}) where {nb}
     sc = e.sc
+    ncol = b - a + 1
     Threads.@threads :dynamic for q in 1:ncol                # dynamic: composes with an outer threaded loop
-        @inbounds _gather_column!(G, Mp, il.src[qs[q]], sc.idx[fs[q]], sc.sgn[fs[q]], q, N, Val(nb))
+        @inbounds begin
+            f = Int(cl.f[a+q-1])
+            _gather_column!(G, Mp, Int(cl.src[a+q-1]), sc.idx[f], sc.sgn[f], q, N, Val(nb))
+        end
     end
     apply!(view(Rw, :, 1:nb*ncol), rep, view(G, :, 1:nb*ncol), α, work)
-    rows = _degree_chunks(N, Threads.nthreads())
-    Threads.@threads :dynamic for r in rows
-        _scatter_rows!(pL, Rw, il, off, sc, e.offs, fs, qs, ncol, r, N, Val(nb))
+    r1, r2 = _run_range(cl, a, b)
+    Threads.@threads :dynamic for r in r1:r2                 # one target per run: disjoint columns of pL
+        _scatter_target!(pL, Rw, sc, e.offs, cl, r, a, b, N, Val(nb))
     end
     return pL
-end
-# the rows 1:N split at degree boundaries n², into about `nchunks` ranges
-function _degree_chunks(N::Int, nchunks::Int)
-    p = isqrt(N) - 1
-    out = UnitRange{Int}[]
-    lo = 1
-    for n in 0:p
-        hi = (n + 1)^2
-        if hi - lo + 1 >= N ÷ nchunks || n == p
-            push!(out, lo:hi)
-            lo = hi + 1
-        end
-    end
-    return out
 end
 @inline function _gather_column!(G, Mp, src::Int, idx, sgn, q::Int, N::Int, ::Val{nb}) where {nb}
     @inbounds for a in 1:nb
@@ -584,22 +572,25 @@ end
     end
     return G
 end
-function _scatter_rows!(pL, Rw, il, off, sc::SymmetryClasses, offs, fs, qs, ncol, rows::UnitRange{Int}, N::Int, ::Val{nb}) where {nb}
-    @inbounds for q in 1:ncol
-        f = fs[q]
-        t = il.tgt[qs[q]] - off
-        idx = sc.idx_t[f]; sgn = sc.sgn_t[f]
-        col = (q - 1) * nb
-        for a in 1:nb
-            o = (a - 1) * N
-            if nb == 4 && a == 4                       # Ψ̂ += o·Φ, with the pair's own offset
-                ov = offs[f]
-                for i in rows
-                    pL[o+idx[i], t] += sgn[i] * (Rw[i, col+4] + ov[1] * Rw[i, col+1] + ov[2] * Rw[i, col+2] + ov[3] * Rw[i, col+3])
-                end
-            else
-                for i in rows
-                    pL[o+idx[i], t] += sgn[i] * Rw[i, col+a]
+# the pairs of run r that lie in the chunk a:b (a target may span two chunks), into its column of pL
+function _scatter_target!(pL, Rw, sc::SymmetryClasses, offs, cl::ClassList, r::Int, a::Int, b::Int, N::Int, ::Val{nb}) where {nb}
+    @inbounds begin
+        t = Int(cl.tgt[r])
+        for q in max(Int(cl.ptr[r]), a):min(Int(cl.ptr[r+1]) - 1, b)
+            f = Int(cl.f[q])
+            idx = sc.idx_t[f]; sgn = sc.sgn_t[f]
+            col = (q - a) * nb
+            for blk in 1:nb
+                o = (blk - 1) * N
+                if nb == 4 && blk == 4                     # Ψ̂ += o·Φ, with the pair's own offset
+                    ov = offs[f]
+                    for i in 1:N
+                        pL[o+idx[i], t] += sgn[i] * (Rw[i, col+4] + ov[1] * Rw[i, col+1] + ov[2] * Rw[i, col+2] + ov[3] * Rw[i, col+3])
+                    end
+                else
+                    for i in 1:N
+                        pL[o+idx[i], t] += sgn[i] * Rw[i, col+blk]
+                    end
                 end
             end
         end

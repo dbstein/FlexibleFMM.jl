@@ -103,8 +103,10 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         ds = (sources=to(pts[perm]), τ=to(τ[perm]))
         outd = to(similar(τ, eltype(usw)))
         local plan
-        t_plan = @elapsed plan = DevicePlan(f, to; verbose=true)
-        t_first = @elapsed device_matvec!(outd, plan, ds)
+        rp = @timed plan = DevicePlan(f, to; verbose=true)
+        rf = @timed device_matvec!(outd, plan, ds)
+        t_plan, t_first = rp.time, rf.time
+        @printf "    plan: compile %.3f s, gc %.3f s; first matvec: compile %.3f s, gc %.3f s\n" rp.compile_time rp.gctime rf.compile_time rf.gctime
         t_mv = minimum(@elapsed(device_matvec!(outd, plan, ds)) for _ in 1:3)
         err = NaN
         if nerr > 0                     # against Float64 direct sums, whatever the run's precision
