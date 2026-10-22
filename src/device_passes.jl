@@ -22,7 +22,7 @@ the class operators of the cube method are replaced by their low-rank factors
 (`class_factors`: singular values above `tol` times the largest), two GEMMs per
 chunk instead of one, `4·n·k` flops per pair instead of `2·n²`; `tol` should sit
 below the accuracy of the order used (`1e-8` for Laplace at `p = 8`, `1e-6` for
-Stokes).
+Stokes). `verbose` reports the build's stages (evaluator, operators, pair lists, uploads).
 """
 # The pairs of one class of one level, grouped by target, in chunks of at most
 # `chunk` columns, each padded (with dummy pairs that no target reads) to the
@@ -74,7 +74,8 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     Gc::Dict{Int,M}; Yc::Dict{Int,M}                         # per chunk length: class gather and GEMM output
 end
 
-function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method)) where {D,T}
+function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
+                    verbose::Bool=false) where {D,T}
     tree = f.tree
     m = f.method
     m isa AbstractKernelIndependent || m isa HarmonicMethod ||
@@ -91,12 +92,13 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     pinv = m isa AbstractKernelIndependent      # the harmonic methods have no partial-to-expansion transforms
     nb = pinv ? 1 : _nblocks(m)                 # scalar expansions per box, translated as columns of one pair
     Ns = Nm ÷ nb                                # rows of the scalar operators and permutations
-    dev = DeviceEvaluator(f, to; fast=fast)
+    t_dev = @elapsed dev = DeviceEvaluator(f, to; fast=fast)
     lo = [first(tree.level_range[l]) for l in 1:L]
     nl = [length(tree.level_range[l]) for l in 1:L]
     # the dense translation operators: one per symmetry class for the cube method
     # (built at the width of level 3 for a homogeneous kernel and scaled, else per
     # level), one per far offset for circles, which have no cube lattice
+    t_ops = @elapsed begin
     l3 = min(3, L)
     a = homogeneity(K)
     M2Lc = Vector{Vector{typeof(to(zeros(TO, 1, 1)))}}(undef, L)
@@ -170,6 +172,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
             end
         end
     end
+    end
     nfar = length(sc.class)
     idx = Matrix{Int32}(undef, Ns, nfar); inv = similar(idx); sgn = Matrix{Int8}(undef, Ns, nfar); sgn_t = similar(sgn)
     for fi in 1:nfar
@@ -177,33 +180,19 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         inv[sc.idx_t[fi], fi] = 1:Ns; sgn_t[:, fi] = sc.sgn_t[fi]  # the scatter applies P_t
     end
     offs = to(SVector{D,R}.(far_offsets(Val(D))))                 # the Stokes coupling Ψ̂ += o·Φ
-    # the pairs by class, grouped by target, in chunks
+    # the pairs by class, grouped by target: one pass over the lists' by-target
+    # Morton view per level (threaded over levels, no sorting), then the uploads
     nclass = length(sc.reps)
     chunk = 4096
     VI = typeof(to(Int32[]))
-    chunks = Vector{Vector{ClassChunk{VI}}}(undef, L)
-    for l in 1:L
-        il = tree.ilists[l]
-        pairs = [(il.tgt[q], il.src[q], fi) for fi in eachindex(sc.class) for q in pair_range(il, fi)]
-        chunks[l] = ClassChunk{VI}[]
-        for c in 1:nclass
-            pc = sort([p for p in pairs if sc.class[p[3]] == c]; by=first)
-            for k in 1:chunk:length(pc)
-                pk = pc[k:min(k + chunk - 1, end)]
-                np = length(pk)
-                len = max(64, nextpow(2, np))
-                src = fill(Int32(1), len); fs = fill(Int32(1), len)
-                src[1:np] = [p[2] for p in pk]; fs[1:np] = [p[3] for p in pk]
-                tg = Int32[]; ptr = Int32[1]
-                for (q, p) in enumerate(pk)
-                    (q == 1 || p[1] != pk[q-1][1]) && push!(tg, Int32(p[1] - lo[l] + 1))
-                    (q > 1 && p[1] != pk[q-1][1]) && push!(ptr, Int32(q))
-                end
-                push!(ptr, Int32(np + 1))
-                push!(chunks[l], ClassChunk{VI}(c, len, to(src), to(fs), to(tg), to(ptr)))
-            end
+    t_lists = @elapsed begin
+        host = Vector{Vector{Tuple{Int,Int,Vector{Int32},Vector{Int32},Vector{Int32},Vector{Int32}}}}(undef, L)
+        Threads.@threads :dynamic for l in 1:L
+            host[l] = _class_chunks_host(tree.ilists[l], sc.class, nclass, chunk, lo[l])
         end
+        chunks = [[ClassChunk{VI}(c, len, to(src), to(fs), to(tg), to(ptr)) for (c, len, src, fs, tg, ptr) in host[l]] for l in 1:L]
     end
+    t_up = @elapsed begin
     mk(r, c) = to(zeros(TO, r, c))
     # the Stokes harmonic M2M and L2L in their dense form: one large GEMM per level
     # beats the eight child blocks with their kernels on a device
@@ -245,6 +234,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
         [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],
         Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens))
+    end
+    verbose && @info "DevicePlan: evaluator $(round(t_dev, digits=3)) s, operators $(round(t_ops, digits=3)) s, pair lists $(round(t_lists, digits=3)) s, buffers and uploads $(round(t_up, digits=3)) s"
     return plan
 end
 
@@ -273,6 +264,53 @@ end
 end
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{1}) = _accumulate_order!(col, ŷ, p, tb, _scaled_density(τ, s), m)
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{4}) = _stokes_accumulate_order!(col, (p + 1)^2, ŷ, p, tb, τ, s, m)
+
+# The chunks of one level on the host: the pairs of each class in target order,
+# straight from the list's by-target view (one pass), cut into chunks of at most
+# `chunk` pairs with their target runs, each padded to the power of two above its size.
+function _class_chunks_host(il::InteractionList, class::Vector{Int}, nclass::Int, chunk::Int, lo::Int)
+    np = length(il.tsrc)
+    counts = zeros(Int, nclass)
+    @inbounds for q in 1:np
+        counts[class[il.tfar[q]]] += 1
+    end
+    csrc = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
+    cf = [Vector{Int32}(undef, counts[c]) for c in 1:nclass]
+    ctg = [Int32[] for _ in 1:nclass]              # the target (level-local) of each run
+    cstart = [Int[] for _ in 1:nclass]              # the first pair of each run, within the class
+    pos = zeros(Int, nclass)
+    cur = zeros(Int32, nclass)
+    @inbounds for g in eachindex(il.torder)
+        t = Int32(il.torder[g] - lo + 1)
+        for q in il.tptr[g]:il.tptr[g+1]-1
+            c = class[il.tfar[q]]
+            p = (pos[c] += 1)
+            csrc[c][p] = il.tsrc[q]
+            cf[c][p] = il.tfar[q]
+            if cur[c] != t
+                push!(ctg[c], t); push!(cstart[c], p); cur[c] = t
+            end
+        end
+    end
+    out = Tuple{Int,Int,Vector{Int32},Vector{Int32},Vector{Int32},Vector{Int32}}[]
+    for c in 1:nclass
+        n = counts[c]
+        for a in 1:chunk:n
+            b = min(a + chunk - 1, n)
+            npk = b - a + 1
+            len = max(64, nextpow(2, npk))
+            src = fill(Int32(1), len); fs = fill(Int32(1), len)
+            src[1:npk] = view(csrc[c], a:b); fs[1:npk] = view(cf[c], a:b)
+            r1 = searchsortedlast(cstart[c], a)          # the run holding pair a
+            r2 = searchsortedlast(cstart[c], b)
+            tg = ctg[c][r1:r2]
+            ptr = Int32[max(cstart[c][r], a) - a + 1 for r in r1:r2]
+            push!(ptr, Int32(npk + 1))
+            push!(out, (c, len, src, fs, tg, ptr))
+        end
+    end
+    return out
+end
 
 # ---- kernels ----
 

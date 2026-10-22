@@ -200,7 +200,12 @@ and `target_field` methods for the outputs it should support.
   operator per offset) in chunks of at most 4096 pairs, each padded to the power of two above its own
   size (padding every chunk to 4096 cost the 34-class harmonic methods 5× and the
   cube method 4× the real gather and GEMM volume), and exact-size work buffers
-  per chunk size; `device_build_expansions!` runs
+  per chunk size. The chunk lists come straight from the interaction lists'
+  by-target view in one pass per level, threaded over levels (the first version
+  materialised every pair as a tuple and sorted it per class, which took 12.5 s
+  of a 10⁷-point Stokes plan on an H100 against 2.2 s for the tree; the pass
+  takes 0.03 s for 10⁶ points on the CPU backend); `DevicePlan(…; verbose=true)`
+  reports the build's stages. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);

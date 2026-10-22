@@ -16,8 +16,8 @@
 # in the precision of precision=float32|float64 (Float32 on Metal by default, Float64
 # elsewhere: a card with weak Float64 wants precision=float32), for the
 # kernel-independent and harmonic methods; with a device the CPU passes do not run,
-# and the device matvec is checked against direct sums at nerr=500 of the sources
-# (nerr=0 skips the check). Needs Metal.jl or CUDA.jl in the
+# and the device matvec is checked against Float64 direct sums at nerr=500 of the
+# sources (nerr=0 skips the check); the plan build's stages are reported. Needs Metal.jl or CUDA.jl in the
 # environment: bench/gpu has Metal, bench/cuda has CUDA (instantiate it on the
 # machine), or add them to the default environment, on which the package
 # environment stacks. device=ka_cpu runs
@@ -62,7 +62,15 @@ function direct_subset(K, pts, τ, sub)
     return out
 end
 
-function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500)
+# densities in the run's precision from the Float64 ones (the reference keeps those)
+cvt(::Type{T}, x::Number) where {T} = T(x)
+cvt(::Type{T}, x::Complex) where {T} = Complex{T}(x)
+cvt(::Type{T}, x::SVector{D}) where {T,D} = SVector{D,T}(x)
+cvt(::Type{T}, x::Stresslet) where {T} = Stresslet(cvt(T, x.f), cvt(T, x.ν))
+cvt(::Type{T}, x::Doublet) where {T} = Doublet(cvt(T, x.g))
+cvt(::Type{T}, x::Tuple) where {T} = map(y -> cvt(T, y), x)
+
+function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts64=nothing, τ64=nothing)
     N = length(pts)
     T = eltype(eltype(pts))
     nw = min(N, 4000)
@@ -94,13 +102,13 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500)
         ds = (sources=to(pts[perm]), τ=to(τ[perm]))
         outd = to(similar(τ, eltype(usw)))
         local plan
-        t_plan = @elapsed plan = DevicePlan(f, to)
+        t_plan = @elapsed plan = DevicePlan(f, to; verbose=true)
         t_first = @elapsed device_matvec!(outd, plan, ds)
         t_mv = minimum(@elapsed(device_matvec!(outd, plan, ds)) for _ in 1:3)
         err = NaN
-        if nerr > 0
+        if nerr > 0                     # against Float64 direct sums, whatever the run's precision
             sub = 1:min(N, nerr)
-            uex = direct_subset(near_kernel(m), pts, τ, sub)
+            uex = direct_subset(K64, pts64, τ64, sub)
             out = Array(outd)[sub]
             err = maximum(norm.(out .- uex)) / maximum(norm.(uex))
         end
@@ -114,13 +122,16 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr)
     println("Julia threads: ", Threads.nthreads(), ", BLAS threads: ", BLAS.get_num_threads(), ", cores assumed: ", CORES,
             ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
     for dname in dists
-        pts = SVector{dim,T}.(GENERATORS[dname](rng, N, Val(dim)))
+        pts64 = GENERATORS[dname](rng, N, Val(dim))
+        pts = SVector{dim,T}.(pts64)
         for ppl in ppls, kspec in kernels, mspec in methods
             kname, K = parse_kernel(kspec, Val(dim), T)
+            _, K64 = parse_kernel(kspec, Val(dim), Float64)
             mname, m = parse_method(mspec, K, Val(dim))
             m === nothing && continue                            # a method not for this kernel
-            τ = density(rng, kernel_kind(kspec), K, N, Val(dim))
-            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr)
+            τ64 = density(rng, kernel_kind(kspec), K64, N, Val(dim))
+            τ = T === Float64 ? τ64 : map(x -> cvt(T, x), τ64)
+            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64)
         end
     end
 end
