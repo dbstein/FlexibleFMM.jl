@@ -178,14 +178,21 @@ and `target_field` methods for the outputs it should support.
   per evaluation. The expansion passes run on the device too
   (`src/device_passes.jl`): `DevicePlan(fmm, to)` holds the folded M2M and L2L,
   the pseudo-inverse factors, one dense translation operator per symmetry class
-  of the far offsets (`src/operators/symmetry.jl`: 16 classes in 3D, applied by
-  signed permutations of the expansion entries, verified against every offset at
-  build time of the tests), the pairs of each class grouped by target in
+  of the far offsets (`src/operators/symmetry.jl`: 16 classes in 3D for the cube
+  lattices, 34 under the subgroup fixing the `z` axis for the harmonic basis,
+  applied by signed permutations of the expansion entries on the source and the
+  target side, verified against every offset in the tests), the pairs of each class grouped by target in
   fixed-size chunks, and exact-size work buffers; `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities; `device_matvec!` adds the self evaluation. Real expansions only
-  (dual numbers take the CPU passes and the device evaluation). Measured on an
+  (dual numbers take the CPU passes and the device evaluation). The harmonic
+  methods take the same plan with their own far-field data (`DeviceHarmonic`:
+  the scale per level and the recurrence tables, adapted to device arrays), an
+  S2M kernel and an evaluation kernel that run the CPU folds, the class
+  representatives as the translation operators, four columns per pair for the
+  Stokes method with the coupling in the scatter, and no pseudo-inverse stages
+  (`docs/harmonics.md`). Measured on an
   M3 Max in Float32 at 10⁵ points, p = 8, 200 per leaf (`bench/gpu/metal_matvec.jl`):
   the matvec in 0.036 s for Laplace and 0.129 s for Stokes against 0.15 s and
   0.90 s on 12 CPU threads in Float32, with the CPU's accuracy against direct

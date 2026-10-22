@@ -151,7 +151,7 @@ for dname in dists
         rows = Any[]
         for mspec in methods
             mname, m = parse_method(mspec, KT, Val(dim))
-            devm = m isa FlexibleFMM.AbstractKernelIndependent ? dev : nothing   # the device passes: kernel-independent methods
+            devm = m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod} ? dev : nothing   # the device passes
             r = run_ours(m, cvt(τ), ptsT, tgT; dev=devm)
             push!(rows, ("ours $mname ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[2] + r[3], relerr(r[4], uex)))
         end

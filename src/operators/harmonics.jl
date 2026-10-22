@@ -158,15 +158,17 @@ Coefficients of the recurrences, at the triangular indices `tidx(n, m)`:
 `e_m = √((2m−1)/2m)`, and the derivative factors `∂_z Υ̃_n^m = cz Υ̃_{n−1}^m`,
 `(∂_x − i∂_y) Υ̃_n^m = −cm Υ̃_{n−1}^{m−1}`, `(∂_x + i∂_y) Υ̃_n^m = cp Υ̃_{n−1}^{m+1}`.
 """
-struct HarmonicTables{T}
+struct HarmonicTables{T,V<:AbstractVector{T}}       # V: a host or a device vector type
     p::Int
-    a::Vector{T}
-    b::Vector{T}
-    e::Vector{T}
-    cz::Vector{T}
-    cm::Vector{T}
-    cp::Vector{T}
+    a::V
+    b::V
+    e::V
+    cz::V
+    cm::V
+    cp::V
 end
+HarmonicTables(p::Int, a::V, b::V, e::V, cz::V, cm::V, cp::V) where {V} = HarmonicTables{eltype(V),V}(p, a, b, e, cz, cm, cp)
+Adapt.@adapt_structure HarmonicTables                 # so that a kernel receives the tables as device arrays
 function harmonic_tables(p::Int, ::Type{T}) where {T}
     nt = tidx(p, p)
     a = zeros(T, nt); b = zeros(T, nt); cz = zeros(T, nt); cm = zeros(T, nt); cp = zeros(T, nt)
@@ -182,7 +184,7 @@ function harmonic_tables(p::Int, ::Type{T}) where {T}
         cp[t] = n - m >= 2 ? sqrt(Float64((n - m) * (n - m - 1))) : zero(T)
     end
     e = [sqrt((2m - 1) / (2m)) for m in 1:p]
-    return HarmonicTables{T}(p, a, b, T.(e), cz, cm, cp)
+    return HarmonicTables(p, a, b, T.(e), cz, cm, cp)
 end
 
 """
@@ -345,7 +347,7 @@ apply!(out::AbstractVecOrMat, op::PermutedM2L, x::AbstractVecOrMat, α, work) = 
 
 struct HarmonicExtras{T,L}
     scale::T                 # 1/w
-    tb::HarmonicTables{T}
+    tb::HarmonicTables{T,Vector{T}}
     sc::SymmetryClasses{3}   # the 34 classes of the far offsets and their permutations
     reps::Vector{L}          # the class representatives' operators (what `M2L` refers to)
     offs::Vector{SVector{3,Int}}
@@ -433,22 +435,25 @@ partial_to_local!(L::AbstractVecOrMat, ::SphericalHarmonics, ::LevelOperators, p
 
 `Σ L_n^m conj Υ̃_n^m(x̂)` or its gradient at `xrel` relative to the box center.
 """
-@inline function l2t(m::SphericalHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Potential=Potential())
-    x̂ = xrel * ops.extra.scale
+@inline l2t(m::SphericalHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Potential=Potential()) =
+    _harmonic_potential(L, xrel * ops.extra.scale, m.p, ops.extra.tb)
+@inline function l2t(m::SphericalHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Gradient)
+    s = ops.extra.scale
+    return _harmonic_gradient(L, xrel * s, m.p, ops.extra.tb) * s
+end
+# the bodies, shared with the device kernels: the value and the scaled gradient at x̂
+@inline function _harmonic_potential(L, x̂::SVector{3}, p::Int, tb::HarmonicTables)
     S = promote_type(eltype(L), typeof(x̂[1]))
-    return _fold_regular(zero(S), x̂, m.p, ops.extra.tb) do acc, n, mm, vr, vi
+    return _fold_regular(zero(S), x̂, p, tb) do acc, n, mm, vr, vi
         lr, li = _get(L, n, mm)
         mm == 0 ? acc + lr * vr : acc + 2 * (lr * vr + li * vi)
     end
 end
-# ∇Φ = (1/w) Σ_{n',m'} A conj Υ̃_{n'}^{m'}(x̂), the three coefficient sets A^x, A^y, A^z of degree
+# ∇̂Φ = Σ_{n',m'} A conj Υ̃_{n'}^{m'}(x̂), the three coefficient sets A^x, A^y, A^z of degree
 # p−1 following from the derivative identities (A_{n'}^{m'} combines L_{n'+1}^{m'±1}, L_{n'+1}^{m'})
-@inline function l2t(m::SphericalHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Gradient)
-    s = ops.extra.scale
-    x̂ = xrel * s
-    tb = ops.extra.tb
+@inline function _harmonic_gradient(L, x̂::SVector{3}, p::Int, tb::HarmonicTables)
     S = promote_type(eltype(L), typeof(x̂[1]))
-    g = _fold_regular(zero(SVector{3,S}), x̂, m.p - 1, tb) do acc, n′, m′, vr, vi
+    return _fold_regular(zero(SVector{3,S}), x̂, p - 1, tb) do acc, n′, m′, vr, vi
         n = n′ + 1
         @inbounds if m′ == 0
             lr, li = _get(L, n, 1)
@@ -465,7 +470,6 @@ end
             return acc + 2 * SVector(axr * vr + axi * vi, ayr * vr + ayi * vi, cz * (zr * vr + zi * vi))
         end
     end
-    return g * s
 end
 
 """

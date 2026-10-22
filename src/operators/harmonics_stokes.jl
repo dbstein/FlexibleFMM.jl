@@ -262,20 +262,22 @@ end
 Velocity `½[Φ − x̂·∇̂Φ + ∇̂Ψ̂]`, pressure `−∇·Φ` or velocity gradient
 `½[∇Φᵀ − ∇Φ − x̂·∇̂∇̂Φ + ∇̂∇̂Ψ̂]/w` at `xrel` relative to the box center.
 """
-@inline function l2t(m::StokesHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Potential=Potential())
-    x̂ = xrel * ops.extra.scale
-    Φ, G, gΨ = _stokes_fold1(L, (m.p + 1)^2, x̂, m.p, ops.extra.tb)
+@inline function l2t(m::StokesHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3},
+                     out::Union{Potential,Pressure,Gradient}=Potential())
+    s = ops.extra.scale
+    return _stokes_output(L, (m.p + 1)^2, xrel * s, s, m.p, ops.extra.tb, out)
+end
+# the bodies, shared with the device kernels
+@inline function _stokes_output(L, N::Int, x̂::SVector{3}, s, p::Int, tb::HarmonicTables, ::Potential)
+    Φ, G, gΨ = _stokes_fold1(L, N, x̂, p, tb)
     return (Φ - G * x̂ + gΨ) / 2
 end
-@inline function l2t(m::StokesHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Pressure)
-    s = ops.extra.scale
-    _, G, _ = _stokes_fold1(L, (m.p + 1)^2, xrel * s, m.p, ops.extra.tb)
+@inline function _stokes_output(L, N::Int, x̂::SVector{3}, s, p::Int, tb::HarmonicTables, ::Pressure)
+    _, G, _ = _stokes_fold1(L, N, x̂, p, tb)
     return -s * tr(G)
 end
-@inline function l2t(m::StokesHarmonics, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Gradient)
-    s = ops.extra.scale
-    x̂ = xrel * s
-    G, H1, H2, H3, H4 = _stokes_fold2(L, (m.p + 1)^2, x̂, m.p, ops.extra.tb)
+@inline function _stokes_output(L, N::Int, x̂::SVector{3}, s, p::Int, tb::HarmonicTables, ::Gradient)
+    G, H1, H2, H3, H4 = _stokes_fold2(L, N, x̂, p, tb)
     return (s / 2) * (transpose(G) - G - x̂[1] * H1 - x̂[2] * H2 - x̂[3] * H3 + H4)
 end
 

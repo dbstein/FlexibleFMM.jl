@@ -76,9 +76,11 @@ The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArra
 (or `CuArray`) moves the operators and lists once, `device_matvec!` runs the
 expansion passes (dense translations by the symmetry classes of the far offsets)
 and the self evaluation on the device, and the device methods of `evaluate!` and
-`evaluate_at_sources!` take device arrays; backends are not dependencies. On an
-M3 Max in Float32, 10⁵ Stokes points take 0.13 s per matvec (7× the 12-thread CPU
-time in the same precision); see `docs/framework.md` and `bench/gpu/`.
+`evaluate_at_sources!` take device arrays; backends are not dependencies. The
+kernel-independent and the harmonic methods run there. On an M3 Max in Float32,
+10⁵ Stokes points take 0.13 s per matvec with the cube method (7× the 12-thread
+CPU time in the same precision); see `docs/framework.md`, `docs/harmonics.md` and
+`bench/gpu/`.
 
 Accuracy: the kernel-independent method with `nequiv` points per circle has a
 worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 48,

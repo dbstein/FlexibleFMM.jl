@@ -243,8 +243,43 @@ cube method's per-box costs (1352 kernel evaluations per point upward, the FFTs
 and `(2p)³` spectra per box) while the harmonic per-box costs are `O(p²)` per
 point and one small column per box. On uniform data (above) the two are level.
 
+## On the device
+
+`DevicePlan` takes the harmonic methods: the S2M kernel (one work-item per
+childless node) and the evaluation kernel run the same folds as the CPU
+(`_accumulate!`, `_harmonic_potential`, `_stokes_output`, …) on the coefficient
+tables adapted to device arrays (`DeviceHarmonic`); the 34 class representatives,
+dense or low rank, go through the class gather/GEMM/scatter of the
+kernel-independent plan, generalised to apply the target-side permutations in the
+scatter and, for the Stokes method, to lay the four expansions of a pair out as
+four columns with the coupling `Ψ̂ += o·Φ` added in the scatter; there are no
+pseudo-inverse stages. The CPU-backend tests compare the device multipoles with
+the CPU pass to `1e-13` and the matvec and every output to `1e-11`.
+
+Measured on an M3 Max in Float32 (`bench/bench.jl … device=metal`, `10⁵` points,
+`ppl = 200`; the device matvec, and the evaluation at `10⁶` uniform targets):
+
+| | harmonics p = 16, tol 1e-6 | harmonics p = 16 dense | cube p = 8 (dense classes) |
+|---|---|---|---|
+| Laplace, uniform: matvec / targets | 45 / 58 ms | 48 / 58 | 36 / 73 |
+| Stokes, uniform | 204 / 124 | 218 / 125 | 122 / 101 |
+| Laplace, helix | 72 / 7 | 77 / 7 | 75 / 21 |
+| Stokes, helix | 369 / 145 | 390 / 144 | 296 / 56 |
+
+Deviations from the CPU results are at the Float32 floor (`1e-6`–`1e-8`). On the
+device the two methods are level for Laplace and the harmonic Stokes matvec is
+1.3–1.7× slower, the opposite of the CPU picture on the helix (where the cube
+method pays its per-box surface evaluations on 12 threads): on the GPU those
+evaluations are the cheap part, and the harmonic S2M kernel runs one work-item
+per childless node with a serial loop over its points, which leaves most of the
+device idle during the upward stage. Target evaluation, one work-item per point
+with the `O(p²)` fold, is 1.3–3× faster than the cube's surface sums.
+
 ## Next
 
-The device plan for the harmonic methods (the two per-point kernels, the operator
-upload through the existing class gather/GEMM/scatter with the target-side
-permutations, no pseudo-inverse stages); Yukawa 3D on the same basis.
+The harmonic S2M kernel with one work-item per (node, order `m`) (each order's
+chain is independent given its sectoral start; dipoles need the three
+neighbouring chains), which is what the Stokes matvec on the device is waiting
+for; the M2M and L2L of the Stokes method as block operators (7 of the 16 `N × N`
+blocks are nonzero, so the dense `4N × 32N` form does 2.3× the flops, visible on
+deep fibre trees); Yukawa 3D on the same basis.

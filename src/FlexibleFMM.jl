@@ -5,6 +5,7 @@ using StaticArrays
 using SpecialFunctions: besselj0, bessely0, besselj1, bessely1, besselk
 using FFTW: fft, fft!, ifft!, plan_fft!, plan_bfft!, plan_rfft, plan_brfft
 import ForwardDiff
+import Adapt
 
 include("util.jl")
 include("kernels.jl")

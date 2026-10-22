@@ -8,7 +8,7 @@
 # (kernel-independent on squares/cubes, p points per edge, margin d, FFT
 # translations, pc = 2p), bb:p (black-box, 2D), harmonics:p, optionally :tol (analytic
 # solid-harmonic expansions, Laplace and Stokes 3D; tol > 0 for low-rank translations). Distributions: uniform, circle
-# (sphere in 3D; both names work), clustered.
+# (sphere in 3D; both names work), clustered, helix (3D, a jittered helix: the fibre case).
 using FlexibleFMM, StaticArrays, Random, LinearAlgebra
 
 parse_kv(args) = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(args, "="))
@@ -20,7 +20,12 @@ function clustered(rng, N, ::Val{D}) where {D}
     centers = [0.1 .+ 0.8 .* rand(rng, SVector{D,Float64}) for _ in 1:10]
     return [centers[1 + (i - 1) % 10] + 0.01 * randn(rng, SVector{D,Float64}) for i in 1:N]
 end
-const GENERATORS = Dict("uniform" => uniform, "circle" => circle, "sphere" => circle, "clustered" => clustered)
+# a jittered helix through the cube (the fibre geometry), 3D only
+function helix(rng, N, ::Val{3})
+    return [SVector(0.5 + 0.3cos(θ), 0.5 + 0.3sin(θ), 0.05 + 0.9θ / (6π)) + 1e-3 * randn(rng, SVector{3,Float64}) for θ in 6π .* rand(rng, N)]
+end
+helix(rng, N, ::Val{2}) = error("the helix distribution is 3D")
+const GENERATORS = Dict("uniform" => uniform, "circle" => circle, "sphere" => circle, "clustered" => clustered, "helix" => helix)
 
 # the kernel of a specification, in precision T; `stresslet` is the Stokes kernel
 # with stresslet densities (see `density`)
