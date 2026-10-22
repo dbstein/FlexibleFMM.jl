@@ -7,7 +7,7 @@
 # (kernel-independent on circles, 2D), square:p or cube:p, optionally :d
 # (kernel-independent on squares/cubes, p points per edge, margin d, FFT
 # translations, pc = 2p), bb:p (black-box, 2D), harmonics:p, optionally :tol (analytic
-# solid-harmonic expansions, Laplace and Stokes 3D; tol > 0 for low-rank translations). Distributions: uniform, circle
+# solid-harmonic expansions, Laplace, Yukawa and Stokes 3D; tol > 0 for low-rank translations). Distributions: uniform, circle
 # (sphere in 3D; both names work), clustered, helix (3D, a jittered helix: the fibre case).
 using FlexibleFMM, StaticArrays, Random, LinearAlgebra
 
@@ -60,9 +60,9 @@ function parse_method(s, K, ::Val{D}) where {D}
         D == 3 || error("method $s is 3D")
         tol = length(parts) > 2 ? parse(Float64, parts[3]) : 0.0
         label = "Harmonics$rest" * (tol > 0 ? " tol=$tol" : "")
-        K isa Laplace3D && return (label, SphericalHarmonics(K; p=parse(Int, rest), tol=tol))
+        K isa Union{Laplace3D,Yukawa3D} && return (label, SphericalHarmonics(K; p=parse(Int, rest), tol=tol))
         K isa Stokeslet3D && return (label, StokesHarmonics(K; p=parse(Int, rest), tol=tol))
-        error("the harmonic methods take the Laplace and Stokes kernels")
+        error("the harmonic methods take the Laplace, Yukawa and Stokes kernels")
     end
     D == 2 || error("method $s is 2D; use cube:p[:d] or harmonics:p in 3D")
     name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))

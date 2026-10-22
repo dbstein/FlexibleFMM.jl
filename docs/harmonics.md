@@ -296,6 +296,38 @@ per point with the `O(p²)` fold, is 1.3–3× faster than the cube's surface su
 What remains of the Stokes gap is in the gather (four columns per pair) and the
 dense `4N × 32N` M2M and L2L.
 
+## Yukawa
+
+`SphericalHarmonics(Yukawa3D(κ); p, tol)` carries `e^{−κr}/(4πr)` on the same basis
+(`src/operators/harmonics_yukawa.jl`). With the modified spherical Bessel functions
+normalised to the Laplace limit, `u_n(z) = (2n+1)!! i_n(z)/z^n` and
+`v_n(z) = (2/π) z^{n+1} k_n(z)/(2n−1)!!` (both `→ 1` as `z → 0`), the generating
+identity keeps the Laplace form with per-degree radial factors,
+`e^{−κ|x−y|}/|x−y| = Σ_n u_n(κ r_<) v_n(κ r_>) Σ_m S̃_n^m(x̂) conj S̃_n^m(ŷ)`, so the
+regular basis is `u_n(κ̂ r) Υ̃_n^m` and the irregular one `v_n(κ̂ r) Θ̃_n^m` in box
+coordinates (`κ̂ = κ w`), and `s2m!` and `l2t` are the Laplace folds with a degree
+weight (a dipole adds the radial derivative `κ̂² u_{n+1} (d·x̂)/(2n+3)`, from
+`u_n'(z) = z u_{n+1}(z)/(2n+3)`); the symmetry classes hold unchanged (a radial
+kernel). `u` comes from Miller's backward recurrence normalised by `u_0 = sinh z/z`,
+`v` from the stable forward one. What does change is the translations: the Yukawa
+addition theorems couple all degrees (Gaunt coefficients), so M2M, L2L and the 34
+M2L representatives are built per width by projection on a sphere, where the real
+surface harmonics are orthogonal: a Gauss × trapezoid rule of `(2p+10) × (4p+20)`
+points, the target's local projected at radius `½`, the parent's multipole at `2`
+and the child's local at `1`, so that the projected fields' angular content decays
+like `¼`, `0.22` and faster per degree, far inside the rule's exactness (degree
+`4p+19`). A width's operators build in `0.36 s` at `p = 16` (`0.96 s` with the
+SVDs), per level since nothing is width independent. Checks: `u`, `v` against
+`SpecialFunctions` to `1e-12`; the generating identity; the operators on all 316
+offsets (charges `4e-6`, dipoles `2.6e-5` at `p = 16`, `κw = 1.1`), M2M, L2L,
+convergence in `p` (`1.5e-2, 4.7e-4, 1.7e-5, 5.7e-7, 4.3e-8` at `p = 6, 10, 14, 18,
+22`, `κw = 1`, the Laplace rate); a tiny `κ` reproduces the Laplace operators to
+`1e-9`; the FMM end to end, gradients, low rank, dual positions. For `κ̂ r ≳ p` the
+series converge slowly relative to their own far field (the polynomial factors of
+`k_n`), which is exponentially small against the near field, so the relative
+tolerances are looser at `κw = 5` and the overall field unaffected. Not on the
+device yet (the kernels would need `κ̂` per level and the radial weights).
+
 ## Next
 
-Yukawa 3D on the same basis; the JellySim backend on `StokesHarmonics`.
+The JellySim backend on `StokesHarmonics`; the Yukawa method on the device.

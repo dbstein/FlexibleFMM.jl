@@ -164,8 +164,8 @@ and `target_field` methods for the outputs it should support.
   method owns the expansion length (the Stokes augmentations), and `Pressure()` is an
   output type evaluating the pressure kernel against the equivalent density.
 - **3D**: done through `CubeKernelIndependent{3}` with `Laplace3D`, `Helmholtz3D`,
-  `Yukawa3D` and `Stokeslet3D`, and `SphericalHarmonics` with `Laplace3D`;
-  `KernelIndependent` (circles) and `BlackBox` are 2D.
+  `Yukawa3D` and `Stokeslet3D`, and `SphericalHarmonics` with `Laplace3D` and
+  `Yukawa3D`; `KernelIndependent` (circles) and `BlackBox` are 2D.
   What 3D still needs is memory work on the spectral path (`docs/kifmm.md`).
 - **GPU** (KernelAbstractions): the evaluation runs on a device (`src/device.jl`):
   `DeviceEvaluator(fmm, to)` moves the tree data once with a user-supplied array

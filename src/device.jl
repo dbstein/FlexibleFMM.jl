@@ -61,6 +61,7 @@ function _device_far(f::FMM, m::HarmonicMethod, to)
                           HarmonicTables(tb.p, to(tb.a), to(tb.b), to(tb.e), to(tb.cz), to(tb.cm), to(tb.cp)))
 end
 _device_far(f::FMM, m, to) = throw(ArgumentError("the device evaluation is written for the kernel-independent and harmonic methods"))
+_device_far(f::FMM, m::SphericalHarmonics{<:Yukawa3D}, to) = throw(ArgumentError("the Yukawa harmonic method is not on the device yet"))
 
 function DeviceEvaluator(f::FMM{D}, to=identity; fast::Bool=false) where {D}
     tree = f.tree

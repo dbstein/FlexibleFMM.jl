@@ -236,31 +236,36 @@ end
     end
 end
 
-# M_n^m += τ conj Υ̃_n^m(ŷ)
-@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Number)
+# M_n^m += w(n) τ conj Υ̃_n^m(ŷ); the degree weight w is 1 for Laplace and the radial
+# factor u_n(κ̂ r) for Yukawa
+@inline _unit(n) = 1
+@inline _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ) = _accumulate!(col, x̂, p, tb, τ, _unit)
+@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Number, w::F) where {F}
     _fold_regular(nothing, x̂, p, tb) do _, n, m, vr, vi
-        _acc!(col, n, m, τ * vr, -τ * vi)
+        t = τ * w(n)
+        _acc!(col, n, m, t * vr, -t * vi)
         nothing
     end
     return col
 end
-# dipole: M_n^m += conj(d̂·∇Υ̃_n^m(ŷ)), d̂ = d/w, by the derivative identities; the value
-# Υ̃_{n'}^{m'} feeds (n'+1, m'+1), (n'+1, m') and (n'+1, m'−1), the last folded into
-# the real entry (n'+1, 0) when m' = 1
-@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, d::Dipole{3})
+# dipole: M_n^m += w(n) conj(d̂·∇Υ̃_n^m(ŷ)), d̂ = d/w, by the derivative identities; the
+# value Υ̃_{n'}^{m'} feeds (n'+1, m'+1), (n'+1, m') and (n'+1, m'−1), the last folded
+# into the real entry (n'+1, 0) when m' = 1
+@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, d::Dipole{3}, w::F) where {F}
     dx, dy, dz = d.d[1], d.d[2], d.d[3]
     _fold_regular(nothing, x̂, p - 1, tb) do _, n′, m′, ur, ui
         n = n′ + 1
+        wn = w(n)
         @inbounds begin
-            c = tb.cm[tidx(n, m′ + 1)] / 2                               # −½ cm d₋ conj u
+            c = wn * tb.cm[tidx(n, m′ + 1)] / 2                          # −½ cm d₋ conj u
             _acc!(col, n, m′ + 1, -c * (dx * ur - dy * ui), c * (dx * ui + dy * ur))
-            c = tb.cz[tidx(n, m′)] * dz                                  # cz d_z conj u
+            c = wn * tb.cz[tidx(n, m′)] * dz                             # cz d_z conj u
             _acc!(col, n, m′, c * ur, -c * ui)
             if m′ >= 2
-                c = tb.cp[tidx(n, m′ - 1)] / 2                           # ½ cp d₊ conj u
+                c = wn * tb.cp[tidx(n, m′ - 1)] / 2                      # ½ cp d₊ conj u
                 _acc!(col, n, m′ - 1, c * (dx * ur + dy * ui), c * (dy * ur - dx * ui))
             elseif m′ == 1
-                c = tb.cp[tidx(n, 0)]                                     # cp Re(d₋ u)
+                c = wn * tb.cp[tidx(n, 0)]                                # cp Re(d₋ u)
                 _acc!(col, n, 0, c * (dx * ur + dy * ui), zero(ur))
             end
         end
@@ -268,9 +273,9 @@ end
     end
     return col
 end
-@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple)
+@inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, w::F) where {F}
     for τi in τ
-        _accumulate!(col, x̂, p, tb, τi)
+        _accumulate!(col, x̂, p, tb, τi, w)
     end
     return col
 end
@@ -279,7 +284,7 @@ end
 
 abstract type HarmonicMethod <: AbstractMethod end            # the methods on solid harmonics (Laplace, Stokes)
 
-struct SphericalHarmonics{K<:Laplace3D,T,L} <: HarmonicMethod      # L: the M2L operator type
+struct SphericalHarmonics{K<:Union{Laplace3D,Yukawa3D},T,L} <: HarmonicMethod      # L: the M2L operator type
     kernel::K
     p::Int
     tol::Float64
@@ -351,8 +356,9 @@ struct HarmonicExtras{T,L}
     sc::SymmetryClasses{3}   # the 34 classes of the far offsets and their permutations
     reps::Vector{L}          # the class representatives' operators (what `M2L` refers to)
     offs::Vector{SVector{3,Int}}
+    κ̂::T                     # κ·w for Yukawa, 0 for Laplace
 end
-_rescaled(e::HarmonicExtras{T,L}, λ) where {T,L} = HarmonicExtras{T,L}(e.scale / λ, e.tb, e.sc, e.reps, e.offs)
+_rescaled(e::HarmonicExtras{T,L}, λ) where {T,L} = HarmonicExtras{T,L}(e.scale / λ, e.tb, e.sc, e.reps, e.offs, e.κ̂)
 
 # the dense real M2L matrix of the far offset `o` for the kernel constant `c` (c_K/w)
 function _harmonic_m2l(o::SVector{3,Int}, p::Int, c::Float64, s::Vector{Float64}, A::Matrix{ComplexF64})
@@ -366,7 +372,7 @@ function _harmonic_m2l(o::SVector{3,Int}, p::Int, c::Float64, s::Vector{Float64}
     return real_operator(A, p)
 end
 
-function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K,T,L}
+function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K<:Laplace3D,T,L}
     p = m.p
     w = T(w)
     N = (p + 1)^2
@@ -393,7 +399,7 @@ function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K,T,L}
     reps = L[_m2l_operator(L, _harmonic_m2l(r, p, c, s, A), m.tol) for r in sc.reps]
     M2L = [PermutedM2L{L}(reps[sc.class[f]], sc.idx[f], sc.sgn[f], sc.idx_t[f], sc.sgn_t[f]) for f in eachindex(sc.class)]
     return LevelOperators(w, reduce(hcat, blocksM), reduce(vcat, blocksL), M2L,
-                          HarmonicExtras{T,L}(1 / w, harmonic_tables(p, T), sc, reps, far_offsets(Val(3))))::operators_type(m)
+                          HarmonicExtras{T,L}(1 / w, harmonic_tables(p, T), sc, reps, far_offsets(Val(3)), zero(T)))::operators_type(m)
 end
 
 _m2l_operator(::Type{M2LOperator{T}}, R::Matrix{Float64}, tol) where {T} = M2LOperator(Matrix{T}(R))
@@ -441,25 +447,29 @@ partial_to_local!(L::AbstractVecOrMat, ::SphericalHarmonics, ::LevelOperators, p
     s = ops.extra.scale
     return _harmonic_gradient(L, xrel * s, m.p, ops.extra.tb) * s
 end
-# the bodies, shared with the device kernels: the value and the scaled gradient at x̂
-@inline function _harmonic_potential(L, x̂::SVector{3}, p::Int, tb::HarmonicTables)
+# the bodies, shared with the device kernels: the value and the scaled gradient at x̂,
+# with a degree weight (1 for Laplace, the radial factors for Yukawa)
+@inline _harmonic_potential(L, x̂::SVector{3}, p::Int, tb::HarmonicTables) = _harmonic_potential(L, x̂, p, tb, _unit)
+@inline function _harmonic_potential(L, x̂::SVector{3}, p::Int, tb::HarmonicTables, w::F) where {F}
     S = promote_type(eltype(L), typeof(x̂[1]))
     return _fold_regular(zero(S), x̂, p, tb) do acc, n, mm, vr, vi
         lr, li = _get(L, n, mm)
-        mm == 0 ? acc + lr * vr : acc + 2 * (lr * vr + li * vi)
+        mm == 0 ? acc + w(n) * (lr * vr) : acc + w(n) * (2 * (lr * vr + li * vi))
     end
 end
 # ∇̂Φ = Σ_{n',m'} A conj Υ̃_{n'}^{m'}(x̂), the three coefficient sets A^x, A^y, A^z of degree
 # p−1 following from the derivative identities (A_{n'}^{m'} combines L_{n'+1}^{m'±1}, L_{n'+1}^{m'})
-@inline function _harmonic_gradient(L, x̂::SVector{3}, p::Int, tb::HarmonicTables)
+@inline _harmonic_gradient(L, x̂::SVector{3}, p::Int, tb::HarmonicTables) = _harmonic_gradient(L, x̂, p, tb, _unit)
+@inline function _harmonic_gradient(L, x̂::SVector{3}, p::Int, tb::HarmonicTables, w::F) where {F}
     S = promote_type(eltype(L), typeof(x̂[1]))
     return _fold_regular(zero(SVector{3,S}), x̂, p - 1, tb) do acc, n′, m′, vr, vi
         n = n′ + 1
+        wn = w(n)
         @inbounds if m′ == 0
             lr, li = _get(L, n, 1)
             c = tb.cm[tidx(n, 1)]
             ax = -c * lr; ay = -c * li; az = tb.cz[tidx(n, 0)] * L[n*n+1]
-            return acc + SVector(ax * vr, ay * vr, az * vr)
+            return acc + wn * SVector(ax * vr, ay * vr, az * vr)
         else
             ur, ui = _get(L, n, m′ + 1); dr, di = _get(L, n, m′ - 1)
             cu = tb.cm[tidx(n, m′ + 1)] / 2; cd = tb.cp[tidx(n, m′ - 1)] / 2
@@ -467,7 +477,7 @@ end
             ayr = -(cu * ui + cd * di); ayi = cu * ur + cd * dr           # A^y = (i/2)(cm L⁺ + cp L⁻)
             cz = tb.cz[tidx(n, m′)]
             zr, zi = _get(L, n, m′)
-            return acc + 2 * SVector(axr * vr + axi * vi, ayr * vr + ayi * vi, cz * (zr * vr + zi * vi))
+            return acc + (2 * wn) * SVector(axr * vr + axi * vi, ayr * vr + ayi * vi, cz * (zr * vr + zi * vi))
         end
     end
 end

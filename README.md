@@ -14,11 +14,13 @@ colleague sum. Four schemes are provided:
   `d`), with translation operators applied by FFT; the method for 3D.
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
-- `SphericalHarmonics` — the classical analytic multipole method for `Laplace3D`:
-  real solid-harmonic expansions of degree `p`, exact M2M and L2L, one M2L
-  operator per symmetry class of the far offsets (34), dense or a truncated SVD
-  (`tol`); charges and dipoles, potential and gradient; `StokesHarmonics` carries
-  the 3D Stokeslet on four such expansions (`docs/harmonics.md`).
+- `SphericalHarmonics` — the classical analytic multipole method for `Laplace3D`
+  and `Yukawa3D`: real solid-harmonic expansions of degree `p` (with the modified
+  spherical Bessel factors for Yukawa), exact M2M and L2L for Laplace and
+  operators by projection per width for Yukawa, one M2L operator per symmetry
+  class of the far offsets (34), dense or a truncated SVD (`tol`); charges and
+  dipoles, potential and gradient; `StokesHarmonics` carries the 3D Stokeslet on
+  four such expansions (`docs/harmonics.md`).
 
 The code is generic over element types: complex kernels and densities, and
 `ForwardDiff.Dual` positions (directional/shape derivatives) go through unchanged.
