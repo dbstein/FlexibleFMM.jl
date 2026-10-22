@@ -9,12 +9,13 @@
 using KernelAbstractions: @kernel, @index, @Const, get_backend, synchronize
 
 """
-    DeviceEvaluator(fmm, to=identity)
+    DeviceEvaluator(fmm, to=identity; fast=false)
 
 The tree data the device evaluation needs, moved once with `to`: the colleagues,
 source ranges, levels and centers of the nodes, the large surface of every level
 (`nlarge × D × nlevels`), the leaf and the output slot of every source, and the
-kernel. `to` maps a CPU array to the device's array type.
+kernel, with the `FastMath` policy if `fast` (the device's reciprocal square root;
+Metal, Float32). `to` maps a CPU array to the device's array type.
 """
 struct DeviceEvaluator{D,K,AI,VI,VP,AR}
     kernel::K
@@ -28,7 +29,7 @@ struct DeviceEvaluator{D,K,AI,VI,VP,AR}
     perm::VI              # original index of each sorted source
 end
 
-function DeviceEvaluator(f::FMM{D}, to=identity) where {D}
+function DeviceEvaluator(f::FMM{D}, to=identity; fast::Bool=false) where {D}
     tree = f.tree
     n = nnodes(tree)
     L = nlevels(tree)
@@ -37,9 +38,10 @@ function DeviceEvaluator(f::FMM{D}, to=identity) where {D}
     for l in 1:L
         ysoa[:, :, l] = f.ops[l].extra.ysoa
     end
-    return DeviceEvaluator{D,typeof(near_kernel(f.method)),typeof(to(tree.colleagues)),typeof(to(Int32[])),
+    K = fast ? fastmath(near_kernel(f.method)) : near_kernel(f.method)
+    return DeviceEvaluator{D,typeof(K),typeof(to(tree.colleagues)),typeof(to(Int32[])),
                            typeof(to(SVector{D,eltype(tree.origin)}[])),typeof(to(ysoa))}(
-        near_kernel(f.method), to(Int32.(tree.colleagues)),
+        K, to(Int32.(tree.colleagues)),
         to(Int32[first(r) for r in tree.points]), to(Int32[last(r) for r in tree.points]),
         to(Int32.(tree.level)), to([center(tree, i) for i in 1:n]), to(ysoa),
         to(Int32.(tree.point_node)), to(Int32.(tree.perm)))

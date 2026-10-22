@@ -7,11 +7,12 @@ using FlexibleFMM, Metal, StaticArrays, Random, Printf, LinearAlgebra
 using FlexibleFMM: locate
 args = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(ARGS, "="))
 N = parse(Int, get(args, "N", "100000")); NT = parse(Int, get(args, "NT", "1000000")); ppl = parse(Int, get(args, "ppl", "200"))
+fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (rsqrt_fast)
 rng = MersenneTwister(1)
 const P3f = SVector{3,Float32}
 pts = [rand(rng, P3f) for _ in 1:N]; tg = [rand(rng, P3f) for _ in 1:NT]
 relerr(u, uex) = maximum(norm.(u .- uex)) / maximum(norm.(uex))
-println("Metal device: ", Metal.current_device().name, ", Julia threads ", Threads.nthreads())
+println("Metal device: ", Metal.current_device().name, ", Julia threads ", Threads.nthreads(), ", fast ", fast)
 for (name, K, τ) in (("Laplace3D", Laplace3D(Float32), randn(rng, Float32, N)),
                      ("Stokeslet3D", Stokeslet3D(Float32), [(randn(rng, P3f), Doublet(randn(rng, P3f))) for _ in 1:N]))
     f = FMM(CubeKernelIndependent{3}(K; p=8), pts; ppl=ppl, bbox=(zero(P3f), 1f0))
@@ -21,7 +22,7 @@ for (name, K, τ) in (("Laplace3D", Laplace3D(Float32), randn(rng, Float32, N)),
     ref = evaluate(f, st, tg); t_cpu = minimum(@elapsed(evaluate(f, st, tg)) for _ in 1:2)
     refs = evaluate_at_sources(f, st); ts_cpu = minimum(@elapsed(evaluate_at_sources(f, st)) for _ in 1:2)
     # device
-    dev = DeviceEvaluator(f, MtlArray); ds = device_state(st, MtlArray)
+    dev = DeviceEvaluator(f, MtlArray; fast=fast); ds = device_state(st, MtlArray)
     tgd = MtlArray(tg); nd = MtlArray(nodes)
     out = MtlArray{eltype(ref)}(undef, NT); outs = MtlArray{eltype(refs)}(undef, N)
     evaluate!(out, dev, ds, tgd, nd); t_dev = minimum(@elapsed(evaluate!(out, dev, ds, tgd, nd)) for _ in 1:3)

@@ -61,8 +61,8 @@ pins_pressure(::Stokeslet3D) = true
 has_flux_source(::Stokeslet3D) = true
 @inline function source_velocity(K::Stokeslet3D, s::SVector{3}, t::SVector{3})
     d = t - s
-    r2 = _sqnorm(d)
-    return (2 * K.c / (r2 * sqrt(r2))) * d
+    ir = _rinv(policy(K), _sqnorm(d))
+    return (2 * K.c * ir^3) * d
 end
 
 function circle_points(n::Int, r::R) where {R<:AbstractFloat}

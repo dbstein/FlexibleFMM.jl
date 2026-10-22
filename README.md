@@ -57,11 +57,15 @@ operators (root boxes are snapped to cached widths). Targets must lie inside the
 root box.
 
 Precision follows the kernel: `Laplace2D(Float32)` or `Helmholtz2D(10f0)` with Float32
-points gives a single-precision tree, operators, expansions and output. On Apple
-silicon, forward BLAS to Accelerate before loading the package
-(`BLAS.lbt_forward("/System/Library/Frameworks/Accelerate.framework/Accelerate";
-clear=true, suffix_hint="\x1a\$NEWLAPACK\$ILP64")`): the 3D matvec is 1.5–1.7×
-faster than with OpenBLAS (`docs/kifmm.md`).
+points gives a single-precision tree, operators, expansions and output.
+
+With OpenBLAS (Julia's default) start Julia with `OPENBLAS_THREAD_TIMEOUT=4` in the
+environment: after each BLAS call its helper threads otherwise spin for ~0.1 s
+against the package's Julia-threaded phases, which costs the 3D matvec 1.3–1.7×
+(`docs/kifmm.md`); the variable makes them sleep at once and is read when OpenBLAS
+starts, so it cannot be set from inside Julia. On Apple silicon, forwarding BLAS
+to Accelerate instead (`BLAS.lbt_forward` on the Accelerate framework with the
+ILP64 suffix) gives the same speed.
 
 The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArray)`
 (or `CuArray`) moves the operators and lists once, `device_matvec!` runs the

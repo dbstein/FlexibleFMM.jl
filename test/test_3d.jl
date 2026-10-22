@@ -317,7 +317,7 @@ end
     dub = [rand3(rng) for _ in 1:N]
     plan = StokesFMMPlan(srcs; targets=tg, ppl=30)                  # defaults in 3D: :cube, p = 8
     @test plan isa StokesFMMPlan{3}
-    @test plan.fmm.method isa CubeKernelIndependent{3,Stokeslet3D{Float64}}
+    @test plan.fmm.method isa CubeKernelIndependent{3,<:Stokeslet3D{Float64}}
     @test plan.fmm.method.p == 8 && plan.fmm.method.pc == 16
     τ = stokes_densities(N; weights=w, stokeslets=stk, stresslets=strs, stressvecs=nu, doublets=dub)
     u = Vector{P3}(undef, 500)

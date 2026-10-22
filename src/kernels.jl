@@ -115,21 +115,45 @@ end
 # ---- 3D kernels: 1/(4π r) scalar potentials and JellySim's 1/(8π) Stokeslet ----
 
 """
+    PreciseMath, FastMath, fastmath(K)
+
+The arithmetic policy of the Laplace and Stokes 3D kernels' radial part, a type
+parameter: `PreciseMath` (`1/sqrt(r²)`, the default) or `FastMath`, the device's
+fast reciprocal square root, which the Metal extension defines for `Float32` and
+its dual numbers on the device only (a `FastMath` kernel has no CPU method).
+`fastmath(K)` switches a kernel's policy; `DeviceEvaluator`/`DevicePlan` take
+`fast=true` to evaluate with it (1.15–1.3× on the device evaluation measured,
+deviations of 1e-7).
+"""
+abstract type MathPolicy end
+struct PreciseMath <: MathPolicy end
+struct FastMath <: MathPolicy end
+@inline _rinv(::PreciseMath, r2) = 1 / sqrt(r2)
+fastmath(K) = K
+
+"""
     Laplace3D(T=Float64)
 
 Free-space Laplace Green's function `1/(4π|t - s|)`, with constants in precision `T`.
 """
-struct Laplace3D{T<:AbstractFloat} <: AbstractRadialKernel
+struct Laplace3D{T<:AbstractFloat,P<:MathPolicy} <: AbstractKernel
     c::T       # 1/(4π)
 end
-Laplace3D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace3D{T}(1 / (4 * T(π)))
+Laplace3D(::Type{T}=Float64) where {T<:AbstractFloat} = Laplace3D{T,PreciseMath}(1 / (4 * T(π)))
+fastmath(K::Laplace3D{T}) where {T} = Laplace3D{T,FastMath}(K.c)
 floattype(::Laplace3D{T}) where {T} = T
-@inline scale(K::Laplace3D) = K.c
-@inline radial_value(::Laplace3D, r) = 1 / r
-@inline function radial_derivatives(::Laplace3D, r)
-    ir = 1 / r
-    ir2 = ir * ir
-    return ir, -ir2, 2 * ir2 * ir
+@inline policy(::Laplace3D{T,P}) where {T,P} = P()
+@inline (K::Laplace3D)(s::SVector{3}, t::SVector{3}) = K.c * _rinv(policy(K), _sqnorm(t - s))
+@inline function gradient_t(K::Laplace3D, s::SVector{3}, t::SVector{3})
+    d = t - s
+    ir = _rinv(policy(K), _sqnorm(d))
+    return (-K.c * ir^3) * d
+end
+@inline function hessian_t(K::Laplace3D, s::SVector{3}, t::SVector{3})
+    d = t - s
+    ir = _rinv(policy(K), _sqnorm(d))
+    a = K.c * ir^3
+    return (3 * a * ir * ir) * (d * transpose(d)) - a * one(SMatrix{3,3,typeof(a)})
 end
 homogeneity(::Laplace3D) = -1
 
@@ -184,22 +208,24 @@ is carried by the densities). Its pressure is `pressure_kernel(K, s, t)·f =
 (r̂·f)/(4π r²)`. The singularities built on it (`Stresslet`, `Doublet`, `Rotlet`)
 follow JellySim's `-3/(4π)` and `1/(8π)` kernels; see docs/stokes.md.
 """
-struct Stokeslet3D{T<:AbstractFloat} <: AbstractKernel
+struct Stokeslet3D{T<:AbstractFloat,P<:MathPolicy} <: AbstractKernel
     c::T       # 1/(8π)
 end
-Stokeslet3D(::Type{T}=Float64) where {T<:AbstractFloat} = Stokeslet3D{T}(1 / (8 * T(π)))
+Stokeslet3D(::Type{T}=Float64) where {T<:AbstractFloat} = Stokeslet3D{T,PreciseMath}(1 / (8 * T(π)))
+fastmath(K::Stokeslet3D{T}) where {T} = Stokeslet3D{T,FastMath}(K.c)
 floattype(::Stokeslet3D{T}) where {T} = T
+@inline policy(::Stokeslet3D{T,P}) where {T,P} = P()
 @inline function (K::Stokeslet3D)(s::SVector{3}, t::SVector{3})
     d = t - s
-    r2 = _sqnorm(d)
-    a = K.c / sqrt(r2)
-    b = a / r2
+    ir = _rinv(policy(K), _sqnorm(d))
+    a = K.c * ir
+    b = a * ir * ir
     return a * one(SMatrix{3,3,typeof(a)}) + b * (d * transpose(d))
 end
 @inline function pressure_kernel(K::Stokeslet3D, s::SVector{3}, t::SVector{3})
     d = t - s
-    r2 = _sqnorm(d)
-    return (2 * K.c / (r2 * sqrt(r2))) * d
+    ir = _rinv(policy(K), _sqnorm(d))
+    return (2 * K.c * ir^3) * d
 end
 homogeneity(::Stokeslet3D) = -1
 
@@ -273,6 +299,10 @@ constant-folds in the per-point bodies.
 ncomp(K, ::Val{D}) where {D} = _ncomp(kernel_eltype(K, SVector{D,floattype(K)}, SVector{D,floattype(K)}))
 _ncomp(::Type{<:Number}) = 1
 _ncomp(::Type{<:SMatrix{m}}) where {m} = m
+# stated outright for the kernels with a math policy: a FastMath kernel has no host
+# method to infer from
+ncomp(::Laplace3D, ::Val{3}) = 1
+ncomp(::Stokeslet3D, ::Val{3}) = 3
 
 """
     homogeneity(K)

@@ -5,12 +5,13 @@
 using FlexibleFMM, Metal, StaticArrays, Random, Printf, LinearAlgebra
 args = Dict{String,String}(String(a[1]) => String(a[2]) for a in split.(ARGS, "="))
 N = parse(Int, get(args, "N", "100000")); ppl = parse(Int, get(args, "ppl", "200"))
+fast = parse(Bool, get(args, "fast", "false"))      # the FastMath policy (rsqrt_fast)
 tol = parse(Float64, get(args, "tol", "0"))        # > 0: low-rank class operators
 rng = MersenneTwister(1)
 const P3f = SVector{3,Float32}
 pts = [rand(rng, P3f) for _ in 1:N]
 relerr(u, uex) = maximum(norm.(u .- uex)) / maximum(norm.(uex))
-println("Metal device: ", Metal.current_device().name, ", Julia threads ", Threads.nthreads(), ", N ", N, ", ppl ", ppl, ", tol ", tol)
+println("Metal device: ", Metal.current_device().name, ", Julia threads ", Threads.nthreads(), ", N ", N, ", ppl ", ppl, ", tol ", tol, ", fast ", fast)
 sub = 1:1000
 for (name, K, τ) in (("Laplace3D", Laplace3D(Float32), randn(rng, Float32, N)),
                      ("Stokeslet3D", Stokeslet3D(Float32), [(randn(rng, P3f), Doublet(randn(rng, P3f))) for _ in 1:N]))
@@ -18,7 +19,7 @@ for (name, K, τ) in (("Laplace3D", Laplace3D(Float32), randn(rng, Float32, N)),
     st = build_expansions(f, pts, τ)
     ref = evaluate_at_sources(f, st)
     t_cpu = minimum(@elapsed(begin build_expansions!(st, f, pts, τ); evaluate_at_sources(f, st) end) for _ in 1:2)
-    t_plan = @elapsed plan = DevicePlan(f, MtlArray; tol=tol)
+    t_plan = @elapsed plan = DevicePlan(f, MtlArray; tol=tol, fast=fast)
     ds = (sources=MtlArray(st.sources), τ=MtlArray(st.τ))
     out = MtlArray{eltype(ref)}(undef, N)
     device_matvec!(out, plan, ds)

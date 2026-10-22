@@ -9,7 +9,7 @@
 # arrays, because device GEMMs on views fall back to slow generic code.
 
 """
-    DevicePlan(fmm, to=identity; tol=0)
+    DevicePlan(fmm, to=identity; tol=0, fast=false)
 
 Everything a device needs for the full matvec of a kernel-independent cube (or
 circle) method: the evaluation data (`DeviceEvaluator`), the per-level operators
@@ -63,7 +63,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB}
     Gc::M; Yc::M                                             # class gather and GEMM output (max pairs)
 end
 
-function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0) where {D,T}
+function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) where {D,T}
     tree = f.tree
     m = f.method
     m isa AbstractKernelIndependent || throw(ArgumentError("the device passes are written for the kernel-independent methods"))
@@ -73,7 +73,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0) where {D,T}
     Nm, pml, pll, Nl = multipole_length(m), partial_multipole_length(m), partial_local_length(m), local_length(m)
     R = floattype(K)
     TO = operator_eltype(m)              # the operators' eltype, complex for a complex kernel
-    dev = DeviceEvaluator(f, to)
+    dev = DeviceEvaluator(f, to; fast=fast)
     lo = [first(tree.level_range[l]) for l in 1:L]
     nl = [length(tree.level_range[l]) for l in 1:L]
     # the dense translation operators: one per symmetry class for the cube method

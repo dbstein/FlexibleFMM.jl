@@ -210,28 +210,28 @@ const Rotlet3 = Rotlet{<:SVector{3}}
 @inline source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}) = K(s, t) * f
 @inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3})
     d = t - s
-    r2 = _sqnorm(d)
-    return (-(6 * K.c) * sum(d .* τ.f) * sum(d .* τ.ν) / (r2 * r2 * sqrt(r2))) * d
+    ir = _rinv(policy(K), _sqnorm(d))
+    return (-(6 * K.c) * sum(d .* τ.f) * sum(d .* τ.ν) * ir^5) * d
 end
 @inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Doublet{3})
     d = t - s
-    r2 = _sqnorm(d)
+    ir = _rinv(policy(K), _sqnorm(d))
     g = τ.g
-    return (K.c / (r2 * sqrt(r2))) * (g - (3 * sum(d .* g) / r2) * d)
+    return (K.c * ir^3) * (g - (3 * sum(d .* g) * ir * ir) * d)
 end
 @inline function source_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Rotlet3)
     d = t - s
-    r2 = _sqnorm(d)
-    return (K.c / (r2 * sqrt(r2))) * cross(τ.ω, d)
+    ir = _rinv(policy(K), _sqnorm(d))
+    return (K.c * ir^3) * cross(τ.ω, d)
 end
 
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Pressure) =
     sum(pressure_kernel(K, s, t) .* f)
 @inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Pressure)
     d = t - s
-    r2 = _sqnorm(d)
-    r3 = r2 * sqrt(r2)
-    return (4 * K.c) * (sum(τ.f .* τ.ν) / r3 - 3 * sum(d .* τ.f) * sum(d .* τ.ν) / (r3 * r2))
+    ir = _rinv(policy(K), _sqnorm(d))
+    ir3 = ir^3
+    return (4 * K.c) * (sum(τ.f .* τ.ν) * ir3 - 3 * sum(d .* τ.f) * sum(d .* τ.ν) * ir3 * ir * ir)
 end
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Doublet{3},Rotlet3}, ::Pressure) =
     zero(promote_type(eltype(s), eltype(t), density_scalar(typeof(τ)), typeof(K.c)))
@@ -240,11 +240,11 @@ end
 
 @inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Gradient)
     d = t - s
-    r2 = _sqnorm(d)
+    ir = _rinv(policy(K), _sqnorm(d))
     df = sum(d .* f)
-    b = K.c / (r2 * sqrt(r2))
+    b = K.c * ir^3
     I3 = one(SMatrix{3,3,typeof(b)})
-    return b * (df * I3 + d * transpose(f) - f * transpose(d)) - (3b * df / r2) * (d * transpose(d))
+    return b * (df * I3 + d * transpose(f) - f * transpose(d)) - (3b * df * ir * ir) * (d * transpose(d))
 end
 @inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Stresslet{3},Doublet{3},Rotlet3}, ::Gradient)
     return ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)

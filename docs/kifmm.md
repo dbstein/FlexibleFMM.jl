@@ -187,14 +187,19 @@ has no complex GEMM.
 
 Three cheap measured gains from the bempp/kifmm study (`docs/notes/kifmm_report.md`):
 the excluded source of the near field is masked rather than skipped, which keeps
-the body branch-free (Stokes self evaluation 210 → 136 ms at 10⁵ points); on
-Apple silicon, forwarding BLAS to Accelerate (`BLAS.lbt_forward` on the
-Accelerate framework with the ILP64 suffix, as `AppleAccelerate.jl` does; the
-package itself cannot be loaded as is, its FFT extension rejects our 3D tables)
-takes the Laplace matvec from 0.33 to 0.20 s and Stokes from 1.50 to 1.03 s, the
-GEMMs being 2× faster and OpenBLAS's spinning threads no longer competing with
-the Julia threads; and a reciprocal square root by estimate and Newton steps
-gains nothing in Float64. The compressed translations of kifmm were measured on
+the body branch-free (Stokes self evaluation 210 → 136 ms at 10⁵ points);
+OpenBLAS's helper threads spin for about 0.1 s after every call (its thread
+timeout) and compete with the Julia-threaded phases that follow the GEMMs, which
+`OPENBLAS_THREAD_TIMEOUT=4` in the environment removes: Laplace matvec 0.34 →
+0.21 s, Stokes 1.40 → 1.07 s, the near field alone 1.4× (forwarding BLAS to
+Apple's Accelerate gives the same numbers on this machine; halving the BLAS
+thread count gives half the gain; splitting the GEMMs over Julia threads with
+single-threaded BLAS calls was tried and is slower, toggling the OpenBLAS pool
+being expensive and Accelerate's own threading better); and a reciprocal square
+root by estimate and Newton steps gains nothing in Float64 on the CPU, while on
+Metal the device's `rsqrt_fast` (the `FastMath` kernel policy, `fast=true` on the
+device plan) gains 1.3× on the Laplace and 1.15× on the Stokes device evaluation at 10⁶ targets (0.076 → 0.058 s and 0.125 → 0.108 s on the M3 Max; the matvec 0.030 and 0.079 s) with deviations of 1e-7 from the precise kernel; the Stokes kernel in isolation gains 2×. The compressed translations of
+kifmm were measured on
 our operators: the far offsets see a smooth kernel, so at `p = 8` the per-offset
 ranks are 25 (Laplace) and 69 (Stokes) at `1e-8` and 9 and 34 at `1e-6`, against
 296 and 889, while the shared basis of all offsets barely compresses (250 and
