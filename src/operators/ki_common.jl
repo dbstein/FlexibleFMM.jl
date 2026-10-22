@@ -294,7 +294,7 @@ relative to the box center.
     S = promote_type(eltype(L), eltype(kernel_eltype(K, SVector{D,eltype(ys)}, typeof(xrel))))
     acc = _field_zero(S, nc)
     @inbounds @simd for k in 1:N
-        acc += K(_row(ys, k, Val(D)), xrel) * _load(L, k, N, nc)
+        acc = _accumulate(acc, K(_row(ys, k, Val(D)), xrel) * _load(L, k, N, nc))
     end
     return acc
 end
@@ -305,7 +305,7 @@ end
     nc = Val(ncomp(K, Val(D)))
     acc = zero(Base.promote_op(target_field, typeof(K), SVector{D,eltype(ys)}, typeof(xrel), typeof(_load(L, 1, N, nc)), typeof(out)))
     @inbounds @simd for k in 1:N
-        acc += target_field(K, _row(ys, k, Val(D)), xrel, _load(L, k, N, nc), out)
+        acc = _accumulate(acc, target_field(K, _row(ys, k, Val(D)), xrel, _load(L, k, N, nc), out))
     end
     return acc
 end
@@ -317,7 +317,7 @@ end
     S = promote_type(eltype(L), eltype(kernel_eltype(K, SVector{D,eltype(ys)}, typeof(xrel))))
     acc = zero(S)
     @inbounds @simd for k in 1:N
-        acc += sum(pressure_kernel(K, _row(ys, k, Val(D)), xrel) .* _load(L, k, N, nc))
+        acc = _accumulate(acc, sum(pressure_kernel(K, _row(ys, k, Val(D)), xrel) .* _load(L, k, N, nc)))
     end
     return acc
 end

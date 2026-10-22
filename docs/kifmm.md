@@ -197,7 +197,16 @@ has no complex GEMM.
 
 Three cheap measured gains from the bempp/kifmm study (`docs/notes/kifmm_report.md`):
 the excluded source of the near field is masked rather than skipped, which keeps
-the body branch-free (Stokes self evaluation 210 → 136 ms at 10⁵ points);
+the body branch-free (Stokes self evaluation 210 → 136 ms at 10⁵ points), and the
+sum over the sources accumulates with reassociation allowed (`_accumulate`), without
+which x86 runs the loop scalar (a strict floating-point reduction; AArch64
+vectorises it in order, and still gains 1.6× from the reassociation: the self phase
+at 10⁶ Stokes points 0.76 → 0.56 s on the M3 Max, 0.42 → 0.10 s on 96 Genoa cores;
+the stokeslet velocity is then formed directly, `c(f/r + d(d·f)/r³)`, 12 products
+instead of the 27 of the 3 × 3 matrix times `f`, and the squared norms and dot
+products of the 3D kernels are fused multiply-adds (`fma`, exactly rounded, so
+that every context rounds alike): 1194 → 1519 M evaluations per second per core
+in the loop's micro-benchmark on the M3 Max);
 OpenBLAS's helper threads spin for about 0.1 s after every call (its thread
 timeout) and compete with the Julia-threaded phases that follow the GEMMs, which
 `OPENBLAS_THREAD_TIMEOUT=4` in the environment removes: Laplace matvec 0.34 →

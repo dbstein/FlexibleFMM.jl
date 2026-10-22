@@ -14,6 +14,14 @@ precision of the operators built from it. `Float64` unless a kernel says otherwi
 floattype(K) = Float64                               # any callable `K(source, target)`
 
 @inline _sqnorm(d::SVector) = sum(abs2, d)
+# fused for 2- and 3-vectors (one rounding per term; the compiler does not fuse on
+# its own, and `fma` rather than `muladd` so that every context, vectorised or not,
+# rounds alike: `kernel_matrix` and the near field agree bitwise), as is the dot
+# product of the kernel bodies
+@inline _sqnorm(d::SVector{2}) = fma(d[2], d[2], d[1] * d[1])
+@inline _sqnorm(d::SVector{3}) = fma(d[3], d[3], fma(d[2], d[2], d[1] * d[1]))
+@inline _dot(a::SVector, b::SVector) = sum(a .* b)
+@inline _dot(a::SVector{3}, b::SVector{3}) = fma(a[3], b[3], fma(a[2], b[2], a[1] * b[1]))
 
 """
     AbstractRadialKernel
