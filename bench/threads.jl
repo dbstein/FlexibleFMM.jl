@@ -1,5 +1,5 @@
-# Threading diagnostics for a machine: the cost of the primitives the passes are
-# made of (thread regions, compute and allocating tasks, the small GEMMs of the
+# Threading diagnostics for a machine: the near-field loop on one core (rate and
+# vectorisation), the cost of the primitives the passes are made of (thread regions, compute and allocating tasks, the small GEMMs of the
 # class translations), then the phases of one case, all at the thread count Julia
 # was started with. Run from the package root:
 #
@@ -14,7 +14,7 @@
 # spinning and removes the wake-ups from the picture (then OPENBLAS_NUM_THREADS=1 as
 # well: spinning Julia threads starve OpenBLAS's own, and with one BLAS thread the
 # passes split the large products over Julia threads instead).
-using FlexibleFMM, StaticArrays, LinearAlgebra, Random, Printf
+using FlexibleFMM, StaticArrays, LinearAlgebra, Random, Printf, InteractiveUtils
 using FlexibleFMM: upward_pass!, downward_pass!, FMMState
 include(joinpath(@__DIR__, "common.jl"))
 
@@ -23,6 +23,22 @@ N = parse(Int, get(args, "N", "100000"))
 ppl = parse(Int, get(args, "ppl", "600"))
 println(config_line())
 nt = Threads.nthreads()
+
+# 0. the near-field loop on one core: its rate, and whether the compiler vectorised
+#    it for this CPU (vector float types in its LLVM IR; the M3 Max: 110 lines,
+#    720 M Stokeslet evaluations per second)
+let rng = MersenneTwister(2), n = 600, K = Stokeslet3D(Float32)
+    src = [rand(rng, SVector{3,Float32}) for _ in 1:n]
+    τ = [randn(rng, SVector{3,Float32}) for _ in 1:n]
+    x = rand(rng, SVector{3,Float32})
+    near(K, src, τ, x) = (acc = zero(SVector{3,Float32}); @inbounds for j in eachindex(src); acc += FlexibleFMM.source_field(K, src[j], x, τ[j]); end; acc)
+    near(K, src, τ, x)
+    ir = sprint(code_llvm, near, Tuple{typeof(K),typeof(src),typeof(τ),typeof(x)})
+    nvec = count(l -> occursin(r"<\d+ x float>", l), split(ir, '\n'))
+    reps = 2000
+    tt = minimum(@elapsed(for _ in 1:reps; near(K, src, τ, x); end) for _ in 1:5)
+    @printf "near field, one core, Float32 Stokeslet: %.0f M evaluations/s, %d vector float lines in the loop's IR\n" reps * n / tt / 1e6 nvec
+end
 
 # 1. thread regions with no work: spawning the tasks and waking the threads
 region() = Threads.@threads :dynamic for i in 1:nt; end
