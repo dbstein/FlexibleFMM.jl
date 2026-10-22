@@ -49,6 +49,8 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     pll::Int                      # partial local length
     nloc::Int                     # local length (density)
     s2m_nodes::Vector{VI}         # per level: childless nodes with sources (global, Int32)
+    leaf_nodes::Vector{VI}        # per level: the real leaves (global), whose locals the evaluation reads
+    leaf_cols::Vector{VI}         # the same as level-local columns
     group_parent::Vector{VI}      # per level: parent of each sibling group (global)
     M2M::Vector{M}; m2m_scale::Vector{Float64}
     L2L::Vector{M}; l2l_scale::Vector{Float64}
@@ -68,7 +70,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     pM::Vector{M}; tup::Vector{M}; Mup::Vector{M}            # per level: S2M check data and pinv work
     B::Vector{M}; tM::Vector{M}                              # per level: children block and M2M output
     G::Vector{M}; Y::Vector{M}                               # per level: L2L input and output
-    pL::Vector{M}; tdn::Vector{M}; Ldn::Vector{M}            # per level: partial locals, pinv work, densities
+    pL::Vector{M}; pLq::Vector{M}; tdn::Vector{M}; Ldn::Vector{M}   # per level: partial locals, their leaf columns, pinv work, leaf densities
     Gc::Dict{Int,M}; Yc::Dict{Int,M}                         # per chunk length: class gather and GEMM output
 end
 
@@ -221,9 +223,11 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     pv(get) = pinv ? [to(Vector{R}(get(f.ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
     rup(l) = pinv ? rank(f.ops[l].extra.P_up) : 1
     rdn(l) = pinv ? rank(f.ops[l].extra.P_down) : 1
+    nq(l) = max(1, length(f.leaf_nodes[l]))
     plan = DevicePlan{D,typeof(dev),typeof(to(zeros(TO, 1, 1))),typeof(to(zeros(R, 1))),VI,typeof(to(idx)),typeof(to(sgn)),typeof(offs)}(
         dev, L, lo, nl, Nm, pml, pll, Nl,
         [to(Int32.(f.s2m_nodes[l])) for l in 1:L],
+        [to(Int32.(f.leaf_nodes[l])) for l in 1:L], [to(Int32.(f.leaf_nodes[l] .- (lo[l] - 1))) for l in 1:L],
         [to(Int32.(tree.group_parent[l])) for l in 1:L],
         [to(Matrix{TO}(m2m_dense(l))) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
         [to(Matrix{TO}(l2l_dense(l))) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
@@ -239,7 +243,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         [mk(Nm, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
         [mk(nc * Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L], [mk(Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L],
         [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
-        [mk(pll, nl[l]) for l in 1:L], [mk(rdn(l), nl[l]) for l in 1:L], [mk(Nl, nl[l]) for l in 1:L],
+        [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],
         Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens))
     return plan
 end
@@ -438,11 +442,17 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
                                           Val(plan.nb); ndrange=pll * nt)
         end
         copyto!(vec(Pl), (plan.lo[l] - 1) * pll + 1, vec(pL), 1, pll * nl)
-        if plan.pinv
-            _pinv_apply!(plan.Ldn[l], plan.Uh_dn[l], plan.invS_dn[l], plan.V_dn[l], pL, plan.tdn[l], plan.pinv_scale[l])
-            copyto!(vec(Lc), (plan.lo[l] - 1) * plan.nloc + 1, vec(plan.Ldn[l]), 1, plan.nloc * nl)
-        else                                    # the locals are the partial locals
-            copyto!(vec(Lc), (plan.lo[l] - 1) * plan.nloc + 1, vec(pL), 1, plan.nloc * nl)
+        # the densities of the level's real leaves only (the propagation runs on the partials)
+        nq = length(plan.leaf_nodes[l])
+        if nq > 0
+            G = plan.pLq[l]
+            _gather_cols!(backend, 256)(G, pL, plan.leaf_cols[l]; ndrange=pll * nq)
+            if plan.pinv
+                _pinv_apply!(plan.Ldn[l], plan.Uh_dn[l], plan.invS_dn[l], plan.V_dn[l], G, plan.tdn[l], plan.pinv_scale[l])
+                _scatter_cols!(backend, 256)(Lc, plan.Ldn[l], plan.leaf_nodes[l], one(eltype(Lc)); ndrange=plan.nloc * nq)
+            else                                # the locals are the partial locals
+                _scatter_cols!(backend, 256)(Lc, G, plan.leaf_nodes[l], one(eltype(Lc)); ndrange=pll * nq)
+            end
         end
     end
     synchronize(backend)

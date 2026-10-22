@@ -87,3 +87,22 @@ end
     @test mrd(outc, evaluate_at_sources(fl, stc)) < 1e-10
     @test_throws ArgumentError DevicePlan(fl; eltype=Float32)
 end
+
+@testset "device locals of the real leaves only" begin
+    rngl = MersenneTwister(92)
+    pts = mixed_points3(rngl, 4000)
+    τ = randn(rngl, 4000)
+    f = FMM(CubeKernelIndependent{3}(Laplace3D(); p=6), pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    plan = DevicePlan(f)
+    ds = (sources=st.sources, τ=st.τ)
+    device_build_expansions!(plan, ds)
+    # the pseudo-inverse amplifies roundoff differences of the two paths (1e-10 relative
+    # in the locals at this order); the fields agree
+    out = zeros(4000)
+    device_matvec!(out, plan, ds)
+    @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
+    nonleaf = [i for i in 1:length(f.tree.leaf) if !f.tree.leaf[i]]
+    @test all(i -> all(iszero, view(plan.locals, :, i)), nonleaf)
+    @test all(l -> size(plan.Ldn[l], 2) == max(1, length(f.leaf_nodes[l])), 1:plan.nlevels)
+end

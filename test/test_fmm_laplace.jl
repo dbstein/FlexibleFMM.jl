@@ -107,3 +107,20 @@ end
     @test evaluate_at_sources(f, st12) ≈ evaluate_at_sources(f, st1) .+ 2u2
     @test occursin("FMM", string(f))
 end
+
+@testset "locals of the real leaves only" begin
+    rngl = MersenneTwister(91)
+    pts = mixed_points(rngl, 6000)
+    τ = randn(rngl, 6000)
+    f = FMM(KernelIndependent(Laplace2D(); nequiv=40), pts; ppl=30, bbox=(P2(0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    t = f.tree
+    @test all(l -> all(i -> t.leaf[i], f.leaf_nodes[l]), 1:length(f.leaf_nodes))
+    @test sum(length, f.leaf_nodes) == count(t.leaf)
+    nonleaf = [i for i in 1:length(t.leaf) if !t.leaf[i]]
+    @test !isempty(nonleaf) && all(i -> all(iszero, view(st.locals, :, i)), nonleaf)
+    @test any(i -> !all(iszero, view(st.locals, :, i)), f.leaf_nodes[end])
+    targets = [rand(rngl, P2) for _ in 1:500]
+    @test mrd(evaluate(f, st, targets), direct(Laplace2D(), pts, τ, targets)) < 1e-9
+    @test mrd(evaluate_at_sources(f, st), direct_self(Laplace2D(), pts, τ)) < 1e-9
+end

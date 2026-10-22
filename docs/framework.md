@@ -18,6 +18,16 @@ expansions. The driver applies `M2M` and `L2L` through `m2m_apply!` and
 structure overrides them (`StokesHarmonics` folds its coupling into the inputs
 and runs four `N × N` GEMMs per child instead of a dense `4N × 32N` product). For the kernel-independent method the partials are check potentials and
 the transforms are pseudo-inverses; for the black-box method they are the identity.
+The downward transform runs on the real leaves of a level only, gathered from the
+stored partial locals: the evaluation reads a local column for the leaf holding a
+point and nothing else, and the level-to-level propagation uses the partials, so
+the other columns of `locals` stay zero. On a surface or a fibre most nodes are
+ghosts or interior (a 10⁵-point sphere at 200 per leaf: 19 689 nodes, 5 475 leaves;
+the helix: 111 009 and 35 015), which made that transform a large share of the
+downward pass: restricting it took the cube method's downward stage from 0.21 to
+0.18 s (Laplace) and 1.36 to 1.07 s (Stokes) on the sphere and from 1.14 to 0.89 s
+and 10.5 to 8.7 s on the helix, 15–20% of the matvec on those geometries and 5% on
+uniform points; on Metal the Stokes cube's stage on the helix went 81 → 38 ms.
 A method also states its `expansion_length`, its `operator_eltype`, and the kernel
 to use in the near field. An M2L operator is dense (`M2LOperator`) or a truncated
 SVD (`LowRankM2L`, the harmonic methods' `tol`); both are applied through `apply!`,
@@ -193,7 +203,8 @@ and `target_field` methods for the outputs it should support.
   per chunk size; `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
-  densities; `device_matvec!` adds the self evaluation. Real expansions, or
+  densities of the level's real leaves (gathered, transformed, scattered);
+  `device_matvec!` adds the self evaluation. Real expansions, or
   complex ones through `DevicePlan(f, to; eltype=ComplexF64)`, which promotes the
   operators (no complex GEMM on Metal); dual numbers take the CPU passes and the
   device evaluation. The harmonic
@@ -213,8 +224,8 @@ and `target_field` methods for the outputs it should support.
   (at `1e-8` the factors keep Float32 noise and the path is slower; Laplace gains
   little, its matvec being elsewhere). The plan (`docs/notes/gpu_plan.md`,
   `gpu_plan_delta.md`) has the CUDA side, which is untested here, and the
-  remaining items: the downward pseudo-inverse on real leaves only, dual numbers
-  through the device passes, and chunking the operators at 10⁶ points.
+  remaining items: dual numbers through the device passes and chunking the
+  operators at 10⁶ points.
 - **Reverse-mode AD**: the FMM is linear in `τ`, so the pullback with respect to `τ`
   is the FMM with sources and targets swapped and the kernel transposed; position
   pullbacks need the gradient kernel in `s2m!`/`l2t`/near field.

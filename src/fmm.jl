@@ -18,6 +18,7 @@ struct FMM{D,T,M<:AbstractMethod,O}
     cache::OperatorCache{M,O}
     ops::Vector{O}                   # operators of each level
     s2m_nodes::Vector{Vector{Int}}   # childless nodes with sources, per level
+    leaf_nodes::Vector{Vector{Int}}  # real leaves per level: the only nodes whose locals the evaluation reads
 end
 
 """
@@ -39,7 +40,8 @@ function FMM(method::AbstractMethod, sources; ppl::Integer=50, bbox=nothing,
     ops = [get_operators!(cache, e0 + 1 - l) for l in 1:L]
     s2m_nodes = [[i for i in tree.level_range[l] if !has_children(tree, i) && tree.has_source[i]]
                  for l in 1:L]
-    return FMM(method, tree, cache, ops, s2m_nodes)
+    leaf_nodes = [[i for i in tree.level_range[l] if tree.leaf[i]] for l in 1:nlevels(tree)]
+    return FMM(method, tree, cache, ops, s2m_nodes, leaf_nodes)
 end
 
 nlevels(f::FMM) = nlevels(f.tree)
@@ -218,8 +220,24 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
         # M2L for the whole level
         m2l_level!(pL, m, ops, Mp, tree.ilists[l], first(lr) - 1, state)
         copyto!(view(Pl, :, lr), pL)
-        # the densities the evaluation reads
-        partial_to_local!(view(Lc, :, lr), m, ops, pL, state.work2)
+        # the densities the evaluation reads: those of the level's real leaves only (the
+        # propagation runs on the partial locals), gathered from the stored partials,
+        # transformed in the level buffer (free once the partials are stored) and
+        # scattered into the leaf columns; the other columns of `locals` stay zero
+        leaves = f.leaf_nodes[l]
+        nq = length(leaves)
+        if nq > 0
+            G = view(state.work1, 1:pll, 1:nq)
+            @inbounds for (q, i) in enumerate(leaves), k in 1:pll
+                G[k, q] = Pl[k, i]
+            end
+            Nl = size(Lc, 1)
+            Tq = reshape(view(state.partial, 1:Nl*nq), Nl, nq)
+            partial_to_local!(Tq, m, ops, G, state.work2)
+            @inbounds for (q, i) in enumerate(leaves), k in 1:Nl
+                Lc[k, i] = Tq[k, q]
+            end
+        end
     end
     return state
 end
