@@ -102,6 +102,18 @@ level-wise scheme (the spectral translation of the square/cube method).
 function m2l_level! end
 
 """
+    m2m_apply!(out, m, ops, B, α, work), l2l_apply!(out, m, ops, G, α, work)
+
+`out = α·M2M·B` (the children's stacked multipoles of the sibling groups, `2^D·Nm ×
+ng`, to the parents' multipoles) and `out = α·L2L·G` (the parents' partial locals to
+the stacked children's). The defaults multiply by the matrices; a method whose
+operators have block structure overrides them (`StokesHarmonics`). `work` has at
+least `Nm·ng` entries.
+"""
+m2m_apply!(out, m::AbstractMethod, ops::LevelOperators, B, α, work) = mul!(out, ops.M2M, B, eltype(ops.M2M)(α), false)
+l2l_apply!(out, m::AbstractMethod, ops::LevelOperators, G, α, work) = mul!(out, ops.L2L, G, eltype(ops.L2L)(α), false)
+
+"""
     rescale(ops, m, w) -> LevelOperators
 
 Operators for width `w` sharing the matrices of `ops` (built for a homogeneous

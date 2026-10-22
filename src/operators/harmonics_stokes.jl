@@ -93,12 +93,26 @@ function level_operators(m::StokesHarmonics{K,T,S}, w::Real) where {K,T,S}
     p = m.p
     N = (p + 1)^2
     sops = level_operators(_scalar_method(m, p), w)
-    M2M = zeros(T, 4N, 8 * 4N)
-    L2L = zeros(T, 8 * 4N, 4N)
+    # M2M and L2L hold the scalar matrices (N × 8N, 8N × N); m2m_apply!/l2l_apply! below
+    # apply them blockwise with the coupling folded into the inputs
+    M2L = [HarmonicStokesM2L{T,PermutedM2L{S}}(sops.M2L[f], SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
+    return LevelOperators(sops.width, sops.M2M, sops.L2L, M2L, sops.extra)::operators_type(m)
+end
+
+# The block structure of the Stokes M2M: for child j, blocks 1–3 of the parent get
+# A_j M_a and block 4 gets A_j (½ M_4 + δ̂·M), so the coupling is folded into the
+# input and each child costs four N × N GEMMs on the stacked group columns. L2L is
+# the mirror image: child blocks 1–3 are B_j L_a, block 4 is B_j (2 L_4 − 2 δ̂·L).
+# The dense 4N × 32N forms do four times the flops; the device plan keeps them
+# (`_stokes_dense_operators`), because there one large GEMM per level beats eight
+# small ones with their kernels (measured: M2M + L2L 74 → 109 ms on the helix).
+function _stokes_dense_operators(ops::LevelOperators, N::Int)
+    T = eltype(ops.M2M)
+    M2M = zeros(T, 4N, 32N); L2L = zeros(T, 32N, 4N)
     for (j, δ) in enumerate(child_offsets(Val(3)))
         δ̂ = (SVector{3,T}(δ) .- T(0.5)) / 2
-        Aj = view(sops.M2M, :, (j-1)*N+1:j*N)
-        Bj = view(sops.L2L, (j-1)*N+1:j*N, :)
+        Aj = view(ops.M2M, :, (j-1)*N+1:j*N)
+        Bj = view(ops.L2L, (j-1)*N+1:j*N, :)
         cj = (j - 1) * 4N
         for a in 1:3
             M2M[(a-1)*N+1:a*N, cj+(a-1)*N+1:cj+a*N] = Aj
@@ -109,8 +123,48 @@ function level_operators(m::StokesHarmonics{K,T,S}, w::Real) where {K,T,S}
         M2M[3N+1:4N, cj+3N+1:cj+4N] = Aj / 2
         L2L[cj+3N+1:cj+4N, 3N+1:4N] = 2 * Bj
     end
-    M2L = [HarmonicStokesM2L{T,PermutedM2L{S}}(sops.M2L[f], SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
-    return LevelOperators(sops.width, M2M, L2L, M2L, sops.extra)::operators_type(m)
+    return M2M, L2L
+end
+function m2m_apply!(out, m::StokesHarmonics, ops::LevelOperators, B, α, work)
+    N = (m.p + 1)^2
+    ng = size(B, 2)
+    X = reshape(view(work, 1:4N*ng), N, 4ng)
+    T = eltype(ops.M2M)
+    fill!(out, zero(eltype(out)))
+    @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
+        δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
+        r0 = (j - 1) * 4N
+        for g in 1:ng, i in 1:N
+            X[i, g] = B[r0+i, g]
+            X[i, ng+g] = B[r0+N+i, g]
+            X[i, 2ng+g] = B[r0+2N+i, g]
+            X[i, 3ng+g] = B[r0+3N+i, g] / 2 + δ̂[1] * B[r0+i, g] + δ̂[2] * B[r0+N+i, g] + δ̂[3] * B[r0+2N+i, g]
+        end
+        Aj = view(ops.M2M, :, (j-1)*N+1:j*N)
+        for a in 1:4
+            mul!(view(out, (a-1)*N+1:a*N, :), Aj, view(X, :, (a-1)*ng+1:a*ng), T(α), true)
+        end
+    end
+    return out
+end
+function l2l_apply!(out, m::StokesHarmonics, ops::LevelOperators, G, α, work)
+    N = (m.p + 1)^2
+    ng = size(G, 2)
+    W = reshape(view(work, 1:N*ng), N, ng)
+    T = eltype(ops.L2L)
+    @inbounds for (j, δ) in enumerate(child_offsets(Val(3)))
+        δ̂ = (SVector{3,Float64}(δ) .- 0.5) / 2
+        Bj = view(ops.L2L, (j-1)*N+1:j*N, :)
+        r0 = (j - 1) * 4N
+        for a in 1:3
+            mul!(view(out, r0+(a-1)*N+1:r0+a*N, :), Bj, view(G, (a-1)*N+1:a*N, :), T(α), false)
+        end
+        for g in 1:ng, i in 1:N
+            W[i, g] = 2 * G[3N+i, g] - 2 * (δ̂[1] * G[i, g] + δ̂[2] * G[N+i, g] + δ̂[3] * G[2N+i, g])
+        end
+        mul!(view(out, r0+3N+1:r0+4N, :), Bj, W, T(α), false)
+    end
+    return out
 end
 
 function rescale(ref::LevelOperators{T,R,<:HarmonicExtras{R},<:HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}

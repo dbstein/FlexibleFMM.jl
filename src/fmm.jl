@@ -170,7 +170,7 @@ function upward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
             ng = length(cr) ÷ nc
             B = reshape(view(Mp, :, cr), nc * Nm, ng)
             tmp = view(state.work1, 1:Nm, 1:ng)
-            mul!(tmp, ops.M2M, B, eltype(ops.M2M)(ops.m2m_scale), false)
+            m2m_apply!(tmp, m, ops, B, ops.m2m_scale, state.work2)
             gp = tree.group_parent[l+1]
             @inbounds for g in 1:ng
                 p = gp[g]
@@ -211,7 +211,7 @@ function downward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
                 end
             end
             pops = f.ops[l-1]
-            mul!(reshape(pL, nc * pll, ng), pops.L2L, G, eltype(pops.L2L)(pops.l2l_scale), false)
+            l2l_apply!(reshape(pL, nc * pll, ng), m, pops, G, pops.l2l_scale, state.work2)
         else
             fill!(pL, zero(S))
         end

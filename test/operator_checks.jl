@@ -4,7 +4,21 @@
 using FlexibleFMM: level_operators, s2m!, l2t, multipole_field, expansion_length,
     multipole_length, local_length, partial_multipole_length, partial_local_length,
     far_offsets, child_offsets, apply!, partial_to_multipole!, partial_to_local!,
-    operator_eltype, density_scalar, ncomp, dimension
+    operator_eltype, density_scalar, ncomp, dimension, m2m_apply!, l2l_apply!
+
+# M2M and L2L through the method's hooks (the matrix products by default)
+function m2m_product(m, ops, stacked::AbstractVector)
+    Nm = multipole_length(m)
+    out = zeros(eltype(stacked), Nm, 1)
+    m2m_apply!(out, m, ops, reshape(stacked, :, 1), 1, zeros(eltype(stacked), Nm, 1))
+    return vec(out)
+end
+function l2l_product(m, ops, pL::AbstractVector)
+    pll = partial_local_length(m)
+    out = zeros(eltype(pL), (1 << dimension(m)) * pll, 1)
+    l2l_apply!(out, m, ops, reshape(pL, :, 1), 1, zeros(eltype(pL), pll, 1))
+    return vec(out)
+end
 
 box_points(rng, c::SVector{D}, w, n) where {D} = [c + w * (rand(rng, SVector{D,Float64}) .- 0.5) for _ in 1:n]
 # random densities of the kind the kernel takes: scalars, or SVectors for Stokes
@@ -75,7 +89,7 @@ function check_m2m(rng, m, w, tol; density=random_density)
         stacked[(k-1)*Nm+1:k*Nm] = multipole_of(m, cops, xs, τ, centers[k])
         append!(allx, xs); append!(allτ, τ)
     end
-    Mp = ops.M2M * stacked                                   # M2M yields the parent's multipole
+    Mp = m2m_product(m, ops, stacked)                        # M2M yields the parent's multipole
     Md = multipole_of(m, ops, allx, allτ, zero(SVector{D,Float64}))
     ts = [2.5w * normalize(randn(rng, SVector{D,Float64})) for _ in 1:50]
     uex = direct(m.kernel, allx, allτ, ts)
@@ -99,7 +113,7 @@ function check_l2l(rng, m, w, tol; density=random_density)
     pLp = zeros(operator_eltype(m), pll)
     apply!(pLp, ops.M2L[f], multipole_of(m, ops, xs, τ, cs))
     Lp = local_of(m, ops, pLp)
-    pLc = ops.L2L * pLp                                      # L2L works on the parent's partial local
+    pLc = l2l_product(m, ops, pLp)                           # L2L works on the parent's partial local
     centers = [(SVector{D,Float64}(δ) .- 0.5) * (w / 2) for δ in child_offsets(Val(D))]
     for k in 1:nch
         ts = box_points(rng, centers[k], w / 2, 20)

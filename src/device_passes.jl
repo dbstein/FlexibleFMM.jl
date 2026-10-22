@@ -182,6 +182,11 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         end
     end
     mk(r, c) = to(zeros(TO, r, c))
+    # the Stokes harmonic M2M and L2L in their dense form: one large GEMM per level
+    # beats the eight child blocks with their kernels on a device
+    dense_ops = nb == 4 ? Dict(l => _stokes_dense_operators(f.ops[l], Ns) for l in 1:L) : Dict{Int,Tuple{Matrix{TO},Matrix{TO}}}()
+    m2m_dense(l) = nb == 4 ? dense_ops[l][1] : f.ops[l].M2M
+    l2l_dense(l) = nb == 4 ? dense_ops[l][2] : f.ops[l].L2L
     lens = unique([ch.len for l in 1:L for ch in chunks[l]])
     isempty(lens) && push!(lens, 64)
     # the pseudo-inverse factors (placeholders for the harmonic methods)
@@ -193,8 +198,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         dev, L, lo, nl, Nm, pml, pll, Nl,
         [to(Int32.(f.s2m_nodes[l])) for l in 1:L],
         [to(Int32.(tree.group_parent[l])) for l in 1:L],
-        [to(Matrix{TO}(f.ops[l].M2M)) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
-        [to(Matrix{TO}(f.ops[l].L2L)) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
+        [to(Matrix{TO}(m2m_dense(l))) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
+        [to(Matrix{TO}(l2l_dense(l))) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
         pm(e -> e.P_up.Uh), pv(e -> e.P_up.invS), pm(e -> e.P_up.V),
         pm(e -> e.P_down.Uh), pv(e -> e.P_down.invS), pm(e -> e.P_down.V),
         pinv ? [Float64(f.ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
@@ -369,7 +374,7 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
             ng = plan.nl[l+1] ÷ nch
             B = plan.B[l]
             copyto!(vec(B), 1, vec(Mp), (plan.lo[l+1] - 1) * Nm + 1, nch * Nm * ng)
-            mul!(plan.tM[l], plan.M2M[l], B)
+            _device_m2m!(plan, l, B, ng, backend)
             _scatter_cols!(backend, 256)(Mp, plan.tM[l], plan.group_parent[l+1], eltype(Mp)(plan.m2m_scale[l]); ndrange=Nm * ng)
         end
     end
@@ -384,7 +389,7 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
             ng = nl ÷ nch
             G = plan.G[l]
             _gather_cols!(backend, 256)(G, Pl, plan.group_parent[l]; ndrange=pll * ng)
-            mul!(plan.Y[l], plan.L2L[l-1], G)
+            _device_l2l!(plan, l, G, ng, backend)
             plan.l2l_scale[l-1] == 1 || (plan.Y[l] .*= eltype(pL)(plan.l2l_scale[l-1]))
             _scatter_children!(backend, 256)(pL, plan.Y[l], pll, nch; ndrange=nch * pll * ng)
         else
@@ -416,6 +421,10 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
     synchronize(backend)
     return plan
 end
+# M2M and L2L of one level: one GEMM (the Stokes harmonic method in its dense
+# block form; the blockwise application of m2m_apply! was measured slower here)
+_device_m2m!(plan::DevicePlan, l::Int, B, ng::Int, backend) = (mul!(plan.tM[l], plan.M2M[l], B); plan)
+_device_l2l!(plan::DevicePlan, l::Int, G, ng::Int, backend) = (mul!(plan.Y[l], plan.L2L[l-1], G); plan)
 # columns `cols` (global) of `src` into the columns of `dst`
 @kernel function _gather_cols!(dst, @Const(src), @Const(cols))
     g = @index(Global, Linear)

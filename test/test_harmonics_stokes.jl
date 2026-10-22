@@ -124,3 +124,24 @@ end
     plan = StokesFMMPlan(pts; targets=tg, method=:harmonics, tol=1e-7, ppl=40)
     @test plan.fmm.method isa StokesHarmonics{<:Stokeslet3D,Float64,FlexibleFMM.LowRankM2L{Float64}}
 end
+
+@testset "block M2M and L2L" begin
+    using FlexibleFMM: m2m_apply!, l2l_apply!, child_offsets
+    m = StokesHarmonics(KSH; p=6)
+    ops = level_operators(m, 0.7)
+    N = 49
+    @test size(ops.M2M) == (N, 8N) && size(ops.L2L) == (8N, N)
+    # the dense forms (what the device plan uploads), assembled from the scalar blocks
+    M2M, L2L = FlexibleFMM._stokes_dense_operators(ops, N)
+    @test size(M2M) == (4N, 32N) && size(L2L) == (32N, 4N)
+    @test M2M[1:N, 1:N] == ops.M2M[:, 1:N] && M2M[3N+1:4N, 3N+1:4N] == ops.M2M[:, 1:N] / 2
+    ng = 5
+    B = randn(rng, 32N, ng); G = randn(rng, 4N, ng)
+    work = zeros(4N, ng)
+    @test m2m_apply!(zeros(4N, ng), m, ops, B, 0.7, work) ≈ 0.7 * M2M * B
+    @test l2l_apply!(zeros(32N, ng), m, ops, G, 1.3, work) ≈ 1.3 * L2L * G
+    # the views the driver hands to the GEMMs are strided
+    st = zeros(100 * 32N)
+    out = reshape(view(st, 1:32N*ng), 32N, ng)
+    @test view(out, 1:N, :) isa StridedMatrix && reshape(view(work, 1:4N*ng), N, 4ng) isa StridedMatrix
+end

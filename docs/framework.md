@@ -13,7 +13,10 @@ five operations per box width:
 
 plus two per-level transforms, `partial_to_multipole!` and `partial_to_local!`,
 that turn the accumulated partial expansions of a whole level into actual
-expansions. For the kernel-independent method the partials are check potentials and
+expansions. The driver applies `M2M` and `L2L` through `m2m_apply!` and
+`l2l_apply!`, matrix products by default; a method whose operators have block
+structure overrides them (`StokesHarmonics` folds its coupling into the inputs
+and runs four `N × N` GEMMs per child instead of a dense `4N × 32N` product). For the kernel-independent method the partials are check potentials and
 the transforms are pseudo-inverses; for the black-box method they are the identity.
 A method also states its `expansion_length`, its `operator_eltype`, and the kernel
 to use in the near field. An M2L operator is dense (`M2LOperator`) or a truncated

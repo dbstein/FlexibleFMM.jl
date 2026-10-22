@@ -103,7 +103,17 @@ automatic differentiation). `Ψ` is kept relative to the centre of the box that 
 the expansion, so no digits are lost at evaluation; changing the reference point adds
 a multiple of `Φ`, which enters the translations as `±¼` (M2M), `o` (M2L) and `∓½`
 (L2L) times the scalar operators, applied blockwise (`HarmonicStokesM2L`: four GEMMs
-with the scalar matrix plus the coupling; M2M and L2L dense `4N × 32N`). Rotlets, a
+with the scalar matrix plus the coupling). M2M and L2L keep the scalar matrices
+and are applied through the driver's `m2m_apply!`/`l2l_apply!` hooks with the
+coupling folded into the inputs: for child `j` the parent's `Φ` blocks get
+`A_j Φ_j` and its `Ψ̂` block `A_j (½ Ψ̂_j + δ̂·Φ_j)`, four `N × N` GEMMs per child
+instead of the dense `4N × 32N` product's sixteen. On the CPU that took the
+helix matvec (stokeslets and doublets) from 1.91 to 1.30 s; on the device the
+same blockwise form was slower (M2M + L2L 74 → 109 ms on the helix: eight small
+GEMMs and sixteen kernel launches per level against one large GEMM), so the plan
+uploads the dense forms. A single GEMM per level with the scalar matrix on the
+children's expansions permuted by the child reflections would give both; not
+done. Rotlets, a
 curl of three further potentials, are not supported. Every derivative at evaluation
 costs a factor of about `p` in the translation error, which the measurements show:
 
@@ -288,6 +298,4 @@ dense `4N × 32N` M2M and L2L.
 
 ## Next
 
-The M2M and L2L of the Stokes method as block operators (7 of the 16 `N × N`
-blocks are nonzero, so the dense `4N × 32N` form does 2.3× the flops, visible on
-deep fibre trees); Yukawa 3D on the same basis.
+Yukawa 3D on the same basis; the JellySim backend on `StokesHarmonics`.
