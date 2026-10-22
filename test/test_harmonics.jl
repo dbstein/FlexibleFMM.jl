@@ -293,3 +293,30 @@ end
         end
     end
 end
+
+@testset "one order at a time" begin
+    using FlexibleFMM: _fold_chain, _accumulate_order!, _accumulate!, _zero_order!, harmonic_tables
+    p = 9
+    tb = harmonic_tables(p, Float64)
+    x = P3(0.3, -0.4, 0.25)
+    full = zeros(ComplexF64, (p + 1)^2)
+    _fold_regular(nothing, x, p, tb) do _, n, m, vr, vi
+        full[cidx(n, m)] = complex(vr, vi); nothing
+    end
+    for m in 0:p
+        _fold_chain(nothing, x, m, p, tb) do _, n, mm, vr, vi
+            @test complex(vr, vi) ≈ full[cidx(n, mm)] rtol = 1e-13
+            nothing
+        end
+    end
+    # the per-order accumulation equals the full one for charges, dipoles and tuples
+    for τ in (1.7, Dipole(P3(0.5, -1.2, 0.8)), (0.6, Dipole(P3(-0.3, 0.9, 1.1))))
+        a = zeros((p + 1)^2); _accumulate!(a, x, p, tb, τ)
+        b = fill(NaN, (p + 1)^2)
+        for m in 0:p
+            _zero_order!(b, p, m)
+            _accumulate_order!(b, x, p, tb, τ, m)
+        end
+        @test b ≈ a atol = 1e-14 * maximum(abs, a)
+    end
+end

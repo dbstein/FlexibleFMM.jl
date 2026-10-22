@@ -204,26 +204,31 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
     return plan
 end
 
-# multipoles of the childless nodes of the harmonic methods: one work-item per node,
-# the folds of harmonics.jl on the node's sources
+# multipoles of the childless nodes of the harmonic methods: one work-item per node
+# and order m, the order's chain of harmonics.jl on the node's sources (the chains
+# of different orders are independent and write disjoint entries)
 @kernel function _s2m_harmonic_kernel!(M, @Const(nodes), @Const(centers), @Const(level), far, @Const(plo), @Const(phi),
                                        @Const(sources), @Const(τ), ::Val{nb}) where {nb}
-    q = @index(Global, Linear)
+    g = @index(Global, Linear)
     @inbounds begin
+        p = far.p
+        q = (g - 1) ÷ (p + 1) + 1
+        m = (g - 1) % (p + 1)
         node = Int(nodes[q])
         c = centers[node]
         s = far.scales[Int(level[node])]
         col = view(M, :, q)
-        for i in eachindex(col)
-            col[i] = zero(eltype(M))
+        N = (p + 1)^2
+        for a in 1:nb
+            _zero_order!(_block(col, N, a), p, m)
         end
         for j in Int(plo[node]):Int(phi[node])
-            _device_accumulate!(col, (sources[j] - c) * s, far.p, far.tb, τ[j], s, Val(nb))
+            _device_accumulate!(col, (sources[j] - c) * s, p, far.tb, τ[j], s, m, Val(nb))
         end
     end
 end
-@inline _device_accumulate!(col, ŷ, p, tb, τ, s, ::Val{1}) = _accumulate!(col, ŷ, p, tb, _scaled_density(τ, s))
-@inline _device_accumulate!(col, ŷ, p, tb, τ, s, ::Val{4}) = _stokes_accumulate!(col, (p + 1)^2, ŷ, p, tb, τ, s)
+@inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{1}) = _accumulate_order!(col, ŷ, p, tb, _scaled_density(τ, s), m)
+@inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{4}) = _stokes_accumulate_order!(col, (p + 1)^2, ŷ, p, tb, τ, s, m)
 
 # ---- kernels ----
 
@@ -348,7 +353,7 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
                 _pinv_apply!(plan.Mup[l], plan.Uh_up[l], plan.invS_up[l], plan.V_up[l], pM, plan.tup[l], plan.pinv_scale[l])
             else
                 _s2m_harmonic_kernel!(backend, 256)(plan.Mup[l], plan.s2m_nodes[l], dev.centers, dev.level, dev.far, dev.plo, dev.phi,
-                                                    ds.sources, ds.τ, Val(plan.nb); ndrange=nq)
+                                                    ds.sources, ds.τ, Val(plan.nb); ndrange=nq * (dev.far.p + 1))
             end
             _scatter_cols!(backend, 256)(Mp, plan.Mup[l], plan.s2m_nodes[l], one(eltype(Mp)); ndrange=Nm * nq)
         end

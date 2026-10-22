@@ -297,3 +297,30 @@ function multipole_field(m::StokesHarmonics, ops::LevelOperators, M::AbstractVec
     g = ForwardDiff.gradient(Ψ, xrel)
     return (Φ(xrel) - transpose(J) * xrel + g / s) / 2
 end
+
+# the four blocks of one source, order m only (the device S2M kernel)
+@inline function _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, f::SVector{3}, s, m::Int)
+    for k in 1:3
+        _accumulate_order!(_block(col, N, k), ŷ, p, tb, f[k], m)
+    end
+    _accumulate_order!(_block(col, N, 4), ŷ, p, tb, sum(ŷ .* f), m)
+    return col
+end
+@inline function _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, τ::Stresslet{3}, s, m::Int)
+    f, ν = τ.f, τ.ν
+    for k in 1:3
+        _accumulate_order!(_block(col, N, k), ŷ, p, tb, Dipole(-(f[k] * ν + ν[k] * f) * s), m)
+    end
+    _accumulate_order!(_block(col, N, 4), ŷ, p, tb, Dipole(-(sum(ν .* ŷ) * f + sum(f .* ŷ) * ν) * s), m)
+    return col
+end
+@inline function _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, τ::Doublet{3}, s, m::Int)
+    _accumulate_order!(_block(col, N, 4), ŷ, p, tb, Dipole(τ.g * (s * s)), m)
+    return col
+end
+@inline function _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, s, m::Int)
+    for τi in τ
+        _stokes_accumulate_order!(col, N, ŷ, p, tb, τi, s, m)
+    end
+    return col
+end

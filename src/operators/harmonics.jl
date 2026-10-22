@@ -622,3 +622,92 @@ function check_harmonic_classes(p::Int; rtol=1e-12)
     worst <= rtol || throw(ArgumentError("the harmonic symmetry classes do not reproduce the translation operators (error $worst)"))
     return worst
 end
+
+# ---- one order at a time (the device S2M kernel: one work-item per node and order) ----
+
+"""
+    _fold_chain(f, acc, x̂, m, nmax, tb)
+
+`acc = f(acc, n, m, Re Υ̃_n^m(x̂), Im Υ̃_n^m(x̂))` over `n = m..nmax` for one order `m`,
+the sectoral start `Υ̃_m^m` built directly (a product of `m` factors), so that the
+chains of different orders are independent.
+"""
+@inline function _fold_chain(f::F, acc, x̂::SVector{3}, m::Int, nmax::Int, tb::HarmonicTables) where {F}
+    x, y, z = x̂[1], x̂[2], x̂[3]
+    r2 = x * x + y * y + z * z
+    sr = one(x); si = zero(x)
+    @inbounds for k in 1:m
+        e = tb.e[k]
+        sr, si = -e * (x * sr - y * si), -e * (x * si + y * sr)
+    end
+    acc = f(acc, m, m, sr, si)
+    pr = zero(sr); pi = zero(si); cr = sr; ci = si
+    @inbounds for n in m+1:nmax
+        t = tidx(n, m)
+        az = tb.a[t] * z; br = tb.b[t] * r2
+        nr = az * cr - br * pr; ni = az * ci - br * pi
+        acc = f(acc, n, m, nr, ni)
+        pr = cr; pi = ci; cr = nr; ci = ni
+    end
+    return acc
+end
+
+# the contributions of one source to the entries of order `m` only; a dipole's come
+# from the chains m−1, m, m+1 (the three terms of the derivative identities)
+@inline function _accumulate_order!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Number, m::Int)
+    _fold_chain(nothing, x̂, m, p, tb) do _, n, mm, vr, vi
+        _acc!(col, n, mm, τ * vr, -τ * vi)
+        nothing
+    end
+    return col
+end
+@inline function _accumulate_order!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, d::Dipole{3}, m::Int)
+    dx, dy, dz = d.d[1], d.d[2], d.d[3]
+    if m >= 1                                                    # from the chain m−1: the (n′+1, m′+1) term
+        _fold_chain(nothing, x̂, m - 1, p - 1, tb) do _, n′, m′, ur, ui
+            n = n′ + 1
+            c = (@inbounds tb.cm[tidx(n, m)]) / 2
+            _acc!(col, n, m, -c * (dx * ur - dy * ui), c * (dx * ui + dy * ur))
+            nothing
+        end
+    end
+    if m <= p - 1                                                # from the chain m: the (n′+1, m′) term
+        _fold_chain(nothing, x̂, m, p - 1, tb) do _, n′, m′, ur, ui
+            n = n′ + 1
+            c = (@inbounds tb.cz[tidx(n, m)]) * dz
+            _acc!(col, n, m, c * ur, -c * ui)
+            nothing
+        end
+    end
+    if m + 1 <= p - 1                                            # from the chain m+1: the (n′+1, m′−1) term
+        _fold_chain(nothing, x̂, m + 1, p - 1, tb) do _, n′, m′, ur, ui
+            n = n′ + 1
+            if m >= 1
+                c = (@inbounds tb.cp[tidx(n, m)]) / 2
+                _acc!(col, n, m, c * (dx * ur + dy * ui), c * (dy * ur - dx * ui))
+            else
+                c = @inbounds tb.cp[tidx(n, 0)]
+                _acc!(col, n, 0, c * (dx * ur + dy * ui), zero(ur))
+            end
+            nothing
+        end
+    end
+    return col
+end
+@inline function _accumulate_order!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, m::Int)
+    for τi in τ
+        _accumulate_order!(col, x̂, p, tb, τi, m)
+    end
+    return col
+end
+# zero the entries of order m of a column
+@inline function _zero_order!(col, p::Int, m::Int)
+    @inbounds for n in m:p
+        if m == 0
+            col[n*n+1] = zero(eltype(col))
+        else
+            col[n*n+2m] = zero(eltype(col)); col[n*n+2m+1] = zero(eltype(col))
+        end
+    end
+    return col
+end

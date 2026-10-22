@@ -246,9 +246,13 @@ point and one small column per box. On uniform data (above) the two are level.
 ## On the device
 
 `DevicePlan` takes the harmonic methods: the S2M kernel (one work-item per
-childless node) and the evaluation kernel run the same folds as the CPU
-(`_accumulate!`, `_harmonic_potential`, `_stokes_output`, …) on the coefficient
-tables adapted to device arrays (`DeviceHarmonic`); the 34 class representatives,
+childless node and order `m`: the chain of an order needs only its sectoral
+start, a product of `m` factors, so the chains are independent and write
+disjoint entries; a dipole's contributions to order `m` come from the chains
+`m−1`, `m`, `m+1`, which the work-item computes itself) and the evaluation kernel
+run the same folds as the CPU (`_fold_chain`, `_accumulate_order!`,
+`_harmonic_potential`, `_stokes_output`, …) on the coefficient tables adapted to
+device arrays (`DeviceHarmonic`); the 34 class representatives,
 dense or low rank, go through the class gather/GEMM/scatter of the
 kernel-independent plan, generalised to apply the target-side permutations in the
 scatter and, for the Stokes method, to lay the four expansions of a pair out as
@@ -261,25 +265,25 @@ Measured on an M3 Max in Float32 (`bench/bench.jl … device=metal`, `10⁵` poi
 
 | | harmonics p = 16, tol 1e-6 | harmonics p = 16 dense | cube p = 8 (dense classes) |
 |---|---|---|---|
-| Laplace, uniform: matvec / targets | 45 / 58 ms | 48 / 58 | 36 / 73 |
-| Stokes, uniform | 204 / 124 | 218 / 125 | 122 / 101 |
-| Laplace, helix | 72 / 7 | 77 / 7 | 75 / 21 |
-| Stokes, helix | 369 / 145 | 390 / 144 | 296 / 56 |
+| Laplace, uniform: matvec / targets | 40 / 58 ms | 48 / 58 | 36 / 72 |
+| Stokes, uniform | 180 / 124 | 218 / 125 | 122 / 101 |
+| Laplace, helix | 68 / 8 | 77 / 7 | 75 / 21 |
+| Stokes, helix | 345 / 145 | 390 / 144 | 295 / 57 |
 
-Deviations from the CPU results are at the Float32 floor (`1e-6`–`1e-8`). On the
-device the two methods are level for Laplace and the harmonic Stokes matvec is
-1.3–1.7× slower, the opposite of the CPU picture on the helix (where the cube
-method pays its per-box surface evaluations on 12 threads): on the GPU those
-evaluations are the cheap part, and the harmonic S2M kernel runs one work-item
-per childless node with a serial loop over its points, which leaves most of the
-device idle during the upward stage. Target evaluation, one work-item per point
-with the `O(p²)` fold, is 1.3–3× faster than the cube's surface sums.
+(The dense column was measured with the earlier S2M kernel, one work-item per
+node; the per-order kernel took the low-rank column from 45 / 204 / 72 / 369 ms
+to the values shown.) Deviations from the CPU results are at the Float32 floor
+(`1e-6`–`1e-8`). On the device the two methods are level for Laplace and the
+harmonic Stokes matvec is 1.2–1.5× slower, the opposite of the CPU picture on the
+helix, where the cube method pays its per-box surface evaluations on 12 threads;
+on the GPU those are cheap. The S2M stage was part of the Stokes gap, not most of
+it: what remains is in the dense `4N × 32N` M2M and L2L (2.3× the flops of the
+seven nonzero blocks) and the four-column GEMMs of the translation, to be settled
+by a staged timing on the device. Target evaluation, one work-item per point with
+the `O(p²)` fold, is 1.3–3× faster than the cube's surface sums.
 
 ## Next
 
-The harmonic S2M kernel with one work-item per (node, order `m`) (each order's
-chain is independent given its sectoral start; dipoles need the three
-neighbouring chains), which is what the Stokes matvec on the device is waiting
-for; the M2M and L2L of the Stokes method as block operators (7 of the 16 `N × N`
+The M2M and L2L of the Stokes method as block operators (7 of the 16 `N × N`
 blocks are nonzero, so the dense `4N × 32N` form does 2.3× the flops, visible on
 deep fibre trees); Yukawa 3D on the same basis.
