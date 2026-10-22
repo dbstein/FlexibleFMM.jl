@@ -41,13 +41,14 @@ function StokesFMMPlan(sources; targets=nothing, method::Union{Nothing,Symbol}=n
                        ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64, cache=nothing)
     D = point_dimension(sources)
     method === nothing && (method = D == 2 ? :ki : :cube)
-    p === nothing && (p = D == 2 ? 12 : 8)
+    p === nothing && (p = D == 2 ? 12 : method === :harmonics ? 16 : 8)
     pc === nothing && (pc = 2p)
     K = stokeslet_kernel(Val(D), precision)
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
         method === :square || method === :cube ? CubeKernelIndependent{D}(K; p=p, pc=pc, d=d) :
         method === :bb ? BlackBox(K; p=p) :
-        throw(ArgumentError("method must be :ki, :square (= :cube) or :bb"))
+        method === :harmonics ? StokesHarmonics(K; p=p) :
+        throw(ArgumentError("method must be :ki, :square (= :cube), :bb or :harmonics"))
     pts = _values(as_svectors(Val(D), sources))
     tgts = targets === nothing ? nothing : _values(as_svectors(Val(D), targets))
     if bbox === nothing

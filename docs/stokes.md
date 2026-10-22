@@ -44,6 +44,7 @@ prefactor, as in the 3D `(1/8π)[S + (ε²/2)D]`. Outputs: `Velocity()` (= `Pote
 ```julia
 plan = StokesFMMPlan(sources; targets=targets, method=:ki, nequiv=60)   # 2D; or method=:square, p=12
 plan = StokesFMMPlan(sources3d; targets=targets3d)                       # 3D: method=:cube, p=8, pc=16
+plan = StokesFMMPlan(sources3d; targets=targets3d, method=:harmonics)    # 3D analytic, p=16; no rotlets
 stokes_fmm_eval!(u, plan; stokeslets=f, doublets=g, weights=w)        # at the targets
 stokes_fmm_eval_src_trg!(u_src, u_trg, plan; stokeslets=f)            # self and targets, one build
 u = StokesFMMKernel(sources; stokeslets=f, stresslets=q, stressvecs=ν) # one shot, self
@@ -94,6 +95,17 @@ doublet translations were wrong by order one at `p = 8`; `docs/kifmm.md` has the
 mechanism, the measured accuracy per singularity, the cost of the Stokes
 translations (the 3D hot spot) and why `ppl ≈ 200` is the place to start for fibre
 and surface distributions.
+
+The harmonic method (`StokesHarmonics`, `docs/harmonics.md`) writes the velocity as
+`u = ½[Φ − (x − c)·∇Φ + ∇Ψ_c]` with four Laplace potentials, `Φ_k` from the
+densities `f_k` and `Ψ_c` from `(y − c)·f`, `c` the centre of the box doing the
+evaluation; stresslets and doublets are the same form with dipole densities, the
+pressure is `−∇·Φ`, and the rotlet, a curl of three further potentials, is not
+supported. Each box carries `Ψ` relative to its own centre (changing the reference
+point adds a multiple of `Φ`, which the translations apply), so no digits are lost
+at evaluation; the price is the gradient at evaluation, which costs a factor of
+about `p` per derivative in the translation error, so stresslets and doublets are
+about `p²` less accurate than stokeslets at the same order.
 
 The black-box method interpolates the stokeslet, so a singularity must be a
 differential operator in the source applied to the stokeslet: stokeslets (values of

@@ -69,6 +69,9 @@ include("operator_checks.jl")
     @testset "spherical harmonics" begin
         include("test_harmonics.jl")
     end
+    @testset "Stokes harmonics" begin
+        include("test_harmonics_stokes.jl")
+    end
     @testset "device evaluation" begin
         include("test_device.jl")
     end

@@ -91,6 +91,45 @@ path is 2–3× slower than the spectral cube path, as `docs/notes/analytic_repo
 predicted. Operators: `316·(p+1)⁴·8` bytes, 69 MB at `p = 12`, 201 MB at 16,
 469 MB at 20, built in 0.05–0.2 s. Default `p = 16`.
 
+## Stokes: `StokesHarmonics`
+
+The 3D Stokeslet is carried on four harmonic expansions (`src/operators/harmonics_stokes.jl`,
+`docs/stokes.md`): `u = ½[Φ − (x − c)·∇Φ + ∇Ψ_c]` with `Φ_k` the Laplace potentials of
+the densities `f_k` and `Ψ_c` that of `(y − c)·f`, from `d·f = (x − c)·f − (y − c)·f`;
+stresslets (the symmetric form of `∂_i∂_j∂_k r`) and doublets (`∂(−g·∇(1/r))`) are the
+same form with dipole densities, the pressure is `−∇·Φ`, the velocity gradient needs
+the Hessians (second derivatives as shifted coefficient sets, checked against
+automatic differentiation). `Ψ` is kept relative to the centre of the box that holds
+the expansion, so no digits are lost at evaluation; changing the reference point adds
+a multiple of `Φ`, which enters the translations as `±¼` (M2M), `o` (M2L) and `∓½`
+(L2L) times the scalar operators, applied blockwise (`HarmonicStokesM2L`: four GEMMs
+with the scalar matrix plus the coupling; M2M and L2L dense `4N × 32N`). Rotlets, a
+curl of three further potentials, are not supported. Every derivative at evaluation
+costs a factor of about `p` in the translation error, which the measurements show:
+
+| p | random, stokeslet | random, stresslet | random, doublet | corner (2,0,0), stokeslet | stresslet | doublet |
+|---|---|---|---|---|---|---|
+| 8 | 2.7e-3 | 2.4e-2 | 3.9e-2 | 1.4e-2 | 0.64 | 0.35 |
+| 12 | 1.1e-4 | 6.8e-3 | 1.7e-3 | 4.9e-3 | 0.25 | 0.13 |
+| 16 | 1.4e-5 | 1.5e-4 | 3.5e-4 | 1.6e-3 | 0.11 | 0.058 |
+| 20 | 3.7e-6 | 7.4e-6 | 1.8e-4 | 5.0e-4 | 0.045 | 0.022 |
+| 24 | 7.3e-8 | 3.2e-6 | 1.1e-6 | 1.5e-4 | 0.016 | 0.008 |
+
+`10⁵` uniform points, `ppl = 200`, errors against direct sums on 1000 of them:
+
+| density | harmonics p = 12 | p = 16 | p = 20 | cube p = 8 | cube p = 10 |
+|---|---|---|---|---|---|
+| stokeslets | 0.54 s, 3.0e-5 | 1.06 s, 1.1e-6 | 2.12 s, 1.3e-7 | 1.01 s, 3.0e-7 | 2.18 s, 1.0e-8 |
+| stresslets | 0.75 s, 4.1e-6 | 1.23 s, 6.0e-7 | 2.46 s, 6.7e-8 | 1.25 s, 7.2e-8 | 2.46 s, 3.8e-9 |
+| doublets | 0.59 s, 6.5e-8 | 1.0 s, 1.6e-8 | 2.1 s, 2.5e-9 | 1.04 s, 1.2e-8 | 2.08 s, 8.7e-10 |
+
+So on the CPU the harmonic Stokes method is level with the cube method at matched
+cost for stokeslets and doublets and a little behind for stresslets, with a far
+worse worst case; its upward pass is 4–6× cheaper and its operators cost nothing
+to build (no SVDs of `1352 × 889` matrices). The hoped-for gain for the singular
+sources (`docs/notes/analytic_report.md`) does not materialise in this
+representation, because the velocity needs gradients of the expansions.
+
 ## Next
 
 Low-rank factors of the M2L were measured and deferred: at `p = 16` the ranks of

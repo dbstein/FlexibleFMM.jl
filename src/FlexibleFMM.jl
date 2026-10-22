@@ -21,6 +21,7 @@ include("operators/kifmm.jl")
 include("operators/spectral_m2l.jl")
 include("operators/bbfmm.jl")
 include("operators/harmonics.jl")
+include("operators/harmonics_stokes.jl")
 include("fmm.jl")
 include("operators/cubeki.jl")
 include("operators/symmetry.jl")
@@ -36,7 +37,7 @@ export source_field, target_field, gradient_s, gradient_t, hessian_t
 export StokesFMMPlan, stokes_fmm_eval!, stokes_fmm_eval_src_trg!, StokesFMMKernel, StokesFMMKernel!, stokes_densities
 export kernel_matrix, direct, direct!, direct_self, direct_self!
 export Tree, locate, locate!, square_bbox
-export KernelIndependent, CubeKernelIndependent, SquareKernelIndependent, BlackBox, SphericalHarmonics, OperatorCache
+export KernelIndependent, CubeKernelIndependent, SquareKernelIndependent, BlackBox, SphericalHarmonics, StokesHarmonics, OperatorCache
 export FMM, FMMState, build_expansions, build_expansions!
 export evaluate, evaluate!, evaluate_at_sources, evaluate_at_sources!
 export DeviceEvaluator, device_state, DevicePlan, device_build_expansions!, device_matvec!
