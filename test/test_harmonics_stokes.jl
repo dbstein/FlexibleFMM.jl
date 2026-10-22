@@ -102,3 +102,24 @@ end
     @test mrd(vals(us), vals(usref)) < 1e-5
     @test mrd(parts(us), parts(usref)) < 1e-4
 end
+
+@testset "low-rank translations" begin
+    m = StokesHarmonics(KSH; p=16, tol=1e-7)
+    @test m isa StokesHarmonics{<:Stokeslet3D,Float64,FlexibleFMM.LowRankM2L{Float64}}
+    ops = level_operators(m, 0.5)
+    @test ops.M2L[1] isa FlexibleFMM.HarmonicStokesM2L{Float64,FlexibleFMM.LowRankM2L{Float64}}
+    @test FlexibleFMM.workspace_rows(ops.M2L[1]) == FlexibleFMM.workspace_rows(ops.M2L[1].op) > 0
+    check_m2l_all_offsets(rng, m, 0.37, 1e-4)
+    check_m2l_all_offsets(rng, m, 0.37, 1e-3; density=mixed_stokes3)
+    N = 4000
+    pts = uniform_points3(rng, N); tg = uniform_points3(rng, 300)
+    τ = mixed_stokes3(rng, KSH, N)
+    f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    @test mrd(evaluate(f, st, tg), direct(KSH, pts, τ, tg)) < 1e-4
+    fd = FMM(StokesHarmonics(KSH; p=16), pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    std = build_expansions(fd, pts, τ)
+    @test mrd(evaluate(f, st, tg), evaluate(fd, std, tg)) < 1e-5
+    plan = StokesFMMPlan(pts; targets=tg, method=:harmonics, tol=1e-7, ppl=40)
+    @test plan.fmm.method isa StokesHarmonics{<:Stokeslet3D,Float64,FlexibleFMM.LowRankM2L{Float64}}
+end

@@ -16,8 +16,9 @@ colleague sum. Four schemes are provided:
   evaluations, for any smooth translation-invariant kernel.
 - `SphericalHarmonics` — the classical analytic multipole method for `Laplace3D`:
   real solid-harmonic expansions of degree `p`, exact M2M and L2L, dense M2L per
-  offset; charges and dipoles, potential and gradient; `StokesHarmonics` carries
-  the 3D Stokeslet on four such expansions (`docs/harmonics.md`).
+  offset or their truncated SVDs (`tol`); charges and dipoles, potential and
+  gradient; `StokesHarmonics` carries the 3D Stokeslet on four such expansions
+  (`docs/harmonics.md`).
 
 The code is generic over element types: complex kernels and densities, and
 `ForwardDiff.Dual` positions (directional/shape derivatives) go through unchanged.

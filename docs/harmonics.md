@@ -130,17 +130,54 @@ to build (no SVDs of `1352 × 889` matrices). The hoped-for gain for the singula
 sources (`docs/notes/analytic_report.md`) does not materialise in this
 representation, because the velocity needs gradients of the expansions.
 
+## Low-rank translations
+
+The far interaction is smooth, so each dense M2L has low ε-rank, and `tol > 0`
+replaces it by its truncated SVD `U·Vt` (`LowRankM2L`, singular values below
+`tol·σ₁` dropped), applied as two thin GEMMs, `4nr` flops per pair instead of
+`2n²`. The intermediate product needs a workspace of `r` rows per pair, which the
+default `m2l_level!` takes from the state's scratch (`workspace_rows(op)`), so the
+operators stay immutable and shared between levels, states and threads; the
+Stokes block operator applies the scalar factors to its four blocks. At `p = 16`
+the ranks (`tol = 1e-6`) are 133 for `(2,0,0)`, 93 for `(2,1,1)`, 46 for `(2,2,2)`,
+25 for `(3,3,3)`, mean 51 of 289 (at `1e-8`: 176/135/79/36, mean 82). The
+translation error floors at a multiple of `tol` (the dropped directions act on the
+whole multipole vector, the field is normalised by the attenuated far field):
+
+| p = 20, tol | 0 | 1e-6 | 1e-7 | 1e-8 | 1e-9 | 1e-10 |
+|---|---|---|---|---|---|---|
+| worst offset error (one sample) | 9.1e-8 | 3.1e-7 | 9.1e-8 | 9.1e-8 | 9.1e-8 | 9.1e-8 |
+| mean rank of 441 | 441 | 54 | 70 | 87 | 106 | 127 |
+| M2L memory | 469 MB | 116 | 149 | 185 | 225 | 270 |
+| build (316 SVDs, `OPENBLAS_THREAD_TIMEOUT=4`) | 1.2 s | 10 s | 10 s | 10 s | 10 s | 10 s |
+
+`10⁵` uniform points, `ppl = 200`, 12 threads (the error is against direct sums on
+1000 points and is set by `p`, not by `tol`, in this range):
+
+| | dense | tol = 1e-6 | 1e-7 | 1e-8 | cube p = 8 |
+|---|---|---|---|---|---|
+| Laplace p = 16 (down stage) | 0.251 s (0.217) | 0.181 (0.147) | 0.212 (0.178) | 0.229 (0.194) | 0.143 (0.089) |
+| Laplace p = 20 | 0.483 (0.443) | | 0.301 (0.261) | 0.309 (0.270) | |
+| Stokes p = 16 | 1.12 (0.98) | 0.88 (0.74) | 0.98 (0.83) | 1.05 (0.91) | 1.14 (0.88) |
+| Stokes p = 20 | 2.22 (2.01) | | 1.49 (1.28) | 1.60 (1.39) | |
+
+The downward stage gains 1.4–1.7×, well short of the 3–4× flop ratio: the two
+thin GEMMs run below the square GEMM's efficiency, and the gather and scatter of
+the pairs, which the rank does not shrink, are a large part of the stage. The
+harmonic Laplace method at `p = 16` stays 1.3× behind the cube method at `p = 8`
+(with 5× its error); the Stokes method at `p = 16`, `tol = 1e-6` is 1.3× ahead of
+the cube method with 3× its error. What would reduce the stage further is the
+gather/scatter traffic (one transform of the level's multipoles per symmetry
+class, as the device plan does), not the rank.
+
+The option applies to any method whose M2L is a dense GEMM (`BlackBox` and the
+circle method could take it the same way; their 2D operators are small enough
+not to need it); the cube method's CPU translation is spectral and its device
+plan already uses low-rank class factors (`docs/kifmm.md`).
+
 ## Next
 
-Low-rank factors of the M2L were measured and deferred: at `p = 16` the ranks of
-the real operators (singular values above `tol·σ₁`) are, at `tol = 1e-6`, 133 for
-`(2,0,0)`, 93 for `(2,1,1)`, 46 for `(2,2,2)`, 25 for `(3,3,3)`, mean 51 of 289
-(at `1e-8`: 176/135/79/36, mean 82; `p = 20`: mean 54 and 87 of 441), so the
-dominating stage would gain 2.8× at `1e-6` and 1.8× at `1e-8`, capped at that
-accuracy, and the 316 SVDs take 24 s to build; worth doing once the 34 symmetry
-classes of the real harmonic basis (every hyperoctahedral operation is a signed
-permutation of it, mixing `Re` and `Im` of the same `(n, m)`) cut the build to 34
-SVDs and also open the device plan to this method. Before that: the Stokes kernel
-as four harmonic potentials (`u = ½[Φ − (x − c)·∇Φ + ∇Ψ]` with `Ψ` relative to
-each box centre, so that the coupling enters M2M, M2L and L2L as `±¼`, `o`, `∓½`
-times the scalar operators and no digits are lost at evaluation), then Yukawa.
+The 34 symmetry classes of the real harmonic basis (every hyperoctahedral
+operation is a signed permutation of it, mixing `Re` and `Im` of the same
+`(n, m)`): 34 SVDs instead of 316 at build time, and the class gather/GEMM/scatter
+of the device plan for both harmonic methods. Then Yukawa 3D on the same basis.

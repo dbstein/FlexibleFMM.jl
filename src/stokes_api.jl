@@ -14,7 +14,8 @@ circles, `nequiv` points; 2D), `:square` or `:cube` (synonyms: kernel independen
 on square/cube surfaces, `p` points per edge, `pc = 2p` on the large surface, margin
 `d`, spectral translations; any dimension) or `:bb` (black box, order `p`; stokeslets, doublets and rotlets,
 velocity only; 2D). The first two support every singularity and the pressure. The
-defaults are `:ki` in 2D and `:cube` in 3D, with `p = 12` in 2D and `p = 8` in 3D.
+defaults are `:ki` in 2D and `:cube` in 3D, with `p = 12` in 2D and `p = 8` in 3D; `:harmonics` is the analytic Stokes method
+in 3D (`p = 16`, `tol > 0` for low-rank translations; no rotlets).
 """
 mutable struct StokesFMMPlan{D,F<:FMM,T}
     fmm::F
@@ -38,7 +39,8 @@ _values(pts::AbstractVector{<:SVector{D}}) where {D} = [SVector{D}(map(_value, p
 
 function StokesFMMPlan(sources; targets=nothing, method::Union{Nothing,Symbol}=nothing, nequiv::Integer=60,
                        p::Union{Nothing,Integer}=nothing, pc::Union{Nothing,Integer}=nothing, d::Real=0.1,
-                       ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64, cache=nothing)
+                       ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64, cache=nothing,
+                       tol::Real=0)
     D = point_dimension(sources)
     method === nothing && (method = D == 2 ? :ki : :cube)
     p === nothing && (p = D == 2 ? 12 : method === :harmonics ? 16 : 8)
@@ -47,7 +49,7 @@ function StokesFMMPlan(sources; targets=nothing, method::Union{Nothing,Symbol}=n
     m = method === :ki ? KernelIndependent(K; nequiv=nequiv) :
         method === :square || method === :cube ? CubeKernelIndependent{D}(K; p=p, pc=pc, d=d) :
         method === :bb ? BlackBox(K; p=p) :
-        method === :harmonics ? StokesHarmonics(K; p=p) :
+        method === :harmonics ? StokesHarmonics(K; p=p, tol=tol) :
         throw(ArgumentError("method must be :ki, :square (= :cube), :bb or :harmonics"))
     pts = _values(as_svectors(Val(D), sources))
     tgts = targets === nothing ? nothing : _values(as_svectors(Val(D), targets))

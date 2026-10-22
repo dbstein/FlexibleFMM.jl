@@ -56,7 +56,7 @@ function run_case(label, m, pts, τ, targets; ppl, to=nothing)
     t_targ = @elapsed ut = evaluate(f, st, targets)
     t_mv = t_up + t_down + t_self
     @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
-    if to !== nothing
+    if to !== nothing && m isa FlexibleFMM.AbstractKernelIndependent      # the device passes: kernel-independent methods
         plan = DevicePlan(f, to)
         ds = (sources=to(st.sources), τ=to(st.τ))
         outd = to(similar(us))

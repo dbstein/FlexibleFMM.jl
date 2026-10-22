@@ -150,8 +150,9 @@ for dname in dists
         rows = Any[]
         for mspec in methods
             mname, m = parse_method(mspec, KT, Val(dim))
-            r = run_ours(m, cvt(τ), ptsT, tgT; dev=dev)
-            push!(rows, ("ours $mname ($(r[5]) levels$(dev === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[2] + r[3], relerr(r[4], uex)))
+            devm = m isa FlexibleFMM.AbstractKernelIndependent ? dev : nothing   # the device passes: kernel-independent methods
+            r = run_ours(m, cvt(τ), ptsT, tgT; dev=devm)
+            push!(rows, ("ours $mname ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[2] + r[3], relerr(r[4], uex)))
         end
         for e in epss
             t, out = run_lib(lib_call(kind, k, e, S, T, τ))

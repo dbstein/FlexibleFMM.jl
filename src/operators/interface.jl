@@ -22,15 +22,52 @@ abstract type AbstractMethod end
 """
     M2LOperator{T}
 
-A same-width translation operator. Dense for now; a compressed form only needs to
-provide `apply!(out, op, x, α)`, computing `out = α·op·x`.
+A same-width translation operator, dense. Another form needs `apply!(out, op, x, α[,
+work])`, computing `out = α·op·x`, and `workspace_rows(op)`.
 """
 struct M2LOperator{T}
     A::Matrix{T}
 end
 @inline apply!(out::AbstractVecOrMat, op::M2LOperator{T}, x::AbstractVecOrMat, α=true) where {T} =
     mul!(out, op.A, x, T(α), false)
+@inline apply!(out::AbstractVecOrMat, op::M2LOperator, x::AbstractVecOrMat, α, work) = apply!(out, op, x, α)
 Base.size(op::M2LOperator) = size(op.A)
+
+"""
+    LowRankM2L{T}
+
+A translation operator in truncated-SVD form `U·Vt`, `U` of size `n × r` with the
+singular values folded in: `4nr` flops per column instead of `2n²`. The intermediate
+`Vt·x` goes to `work` (at least `r` rows and as many columns as `x`; the driver
+takes it from the state's scratch, so the operator can be shared between levels,
+states and threads); the form without `work` allocates it.
+"""
+struct LowRankM2L{T}
+    U::Matrix{T}
+    Vt::Matrix{T}
+end
+Base.size(op::LowRankM2L) = (size(op.U, 1), size(op.Vt, 2))
+function apply!(out::AbstractVector, op::LowRankM2L{T}, x::AbstractVector, α, work::AbstractVector) where {T}
+    w = view(work, 1:size(op.U, 2))
+    mul!(w, op.Vt, x)
+    return mul!(out, op.U, w, T(α), false)
+end
+function apply!(out::AbstractMatrix, op::LowRankM2L{T}, x::AbstractMatrix, α, work::AbstractMatrix) where {T}
+    w = view(work, 1:size(op.U, 2), 1:size(x, 2))
+    mul!(w, op.Vt, x)
+    return mul!(out, op.U, w, T(α), false)
+end
+apply!(out::AbstractVecOrMat, op::LowRankM2L, x::AbstractVecOrMat, α=true) =
+    apply!(out, op, x, α, similar(x, size(op.U, 2), size(x)[2:end]...))
+apply!(out::AbstractVecOrMat, op::LowRankM2L, x::AbstractVecOrMat, α, ::Nothing) = apply!(out, op, x, α)
+
+"""
+    workspace_rows(op)
+
+Rows of the workspace `apply!` needs for `op`, 0 for a dense operator.
+"""
+workspace_rows(::M2LOperator) = 0
+workspace_rows(op::LowRankM2L) = size(op.U, 2)
 
 """
     LevelOperators{T,R,X,L}

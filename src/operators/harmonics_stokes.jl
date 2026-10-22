@@ -22,21 +22,25 @@
 # and Hessians of the local expansions come from the derivative identities of
 # harmonics.jl as shifted coefficient sets.
 
-struct StokesHarmonics{K<:Stokeslet3D,T} <: AbstractMethod
+struct StokesHarmonics{K<:Stokeslet3D,T,S} <: AbstractMethod      # S: the scalar M2L operator type
     kernel::K
     p::Int
+    tol::Float64
 end
 
 """
-    StokesHarmonics(kernel::Stokeslet3D; p=16)
+    StokesHarmonics(kernel::Stokeslet3D; p=16, tol=0)
 
 The analytic multipole method for the 3D Stokeslet: four solid-harmonic expansions
-of degree `p` (`4(p+1)²` coefficients). Stokeslets, stresslets and doublets;
-velocity, velocity-gradient and pressure outputs.
+of degree `p` (`4(p+1)²` coefficients), with the scalar translations dense or, for
+`tol > 0`, in truncated-SVD form as for `SphericalHarmonics`. Stokeslets, stresslets
+and doublets; velocity, velocity-gradient and pressure outputs.
 """
-function StokesHarmonics(kernel::Stokeslet3D{T,PreciseMath}; p::Integer=16) where {T}
+function StokesHarmonics(kernel::Stokeslet3D{T,PreciseMath}; p::Integer=16, tol::Real=0) where {T}
     p >= 1 || throw(ArgumentError("p must be at least 1"))
-    return StokesHarmonics{typeof(kernel),T}(kernel, Int(p))
+    0 <= tol < 1 || throw(ArgumentError("tol must lie in [0, 1)"))
+    S = tol > 0 ? LowRankM2L{T} : M2LOperator{T}
+    return StokesHarmonics{typeof(kernel),T,S}(kernel, Int(p), Float64(tol))
 end
 
 order(m::StokesHarmonics) = m.p
@@ -44,32 +48,33 @@ dimension(::StokesHarmonics) = 3
 expansion_length(m::StokesHarmonics) = 4 * (m.p + 1)^2
 near_kernel(m::StokesHarmonics) = m.kernel
 operator_eltype(::StokesHarmonics{K,T}) where {K,T} = T
-operators_type(::StokesHarmonics{K,T}) where {K,T} = LevelOperators{T,T,HarmonicExtras{T},HarmonicStokesM2L{T}}
+operators_type(::StokesHarmonics{K,T,S}) where {K,T,S} = LevelOperators{T,T,HarmonicExtras{T},HarmonicStokesM2L{T,S}}
 supports_density(::StokesHarmonics, ::Type) = false
 supports_density(::StokesHarmonics, ::Type{<:SVector{3}}) = true
 supports_density(::StokesHarmonics, ::Type{<:Stresslet{3}}) = true
 supports_density(::StokesHarmonics, ::Type{<:Doublet{3}}) = true
 supports_density(m::StokesHarmonics, ::Type{T}) where {T<:Tuple} = all(S -> supports_density(m, S), fieldtypes(T))
 supports_output(::StokesHarmonics, out) = out isa Potential || out isa Gradient || out isa Pressure
-_scalar_method(::StokesHarmonics{K,T}, p) where {K,T} = SphericalHarmonics(Laplace3D(T); p=p)
+_scalar_method(m::StokesHarmonics{K,T}, p) where {K,T} = SphericalHarmonics(Laplace3D(T); p=p, tol=m.tol)
 
 """
-    HarmonicStokesM2L{T}
+    HarmonicStokesM2L{T,S}
 
-The M2L of one far offset `o`: the scalar operator on each of the four blocks and
-the coupling `Ψ̂ += o·Φ`.
+The M2L of one far offset `o`: the scalar operator (of type `S`, dense or low rank)
+on each of the four blocks and the coupling `Ψ̂ += o·Φ`.
 """
-struct HarmonicStokesM2L{T}
-    A::Matrix{T}
+struct HarmonicStokesM2L{T,S}
+    op::S
     o::SVector{3,T}
 end
-Base.size(op::HarmonicStokesM2L) = (4 * size(op.A, 1), 4 * size(op.A, 2))
+Base.size(op::HarmonicStokesM2L) = 4 .* size(op.op)
+workspace_rows(op::HarmonicStokesM2L) = workspace_rows(op.op)
 @inline _block(x::AbstractVector, N::Int, a::Int) = view(x, (a-1)*N+1:a*N)
 @inline _block(x::AbstractMatrix, N::Int, a::Int) = view(x, (a-1)*N+1:a*N, :)
-function apply!(out::AbstractVecOrMat, op::HarmonicStokesM2L{T}, x::AbstractVecOrMat, α=true) where {T}
-    N = size(op.A, 1)
+function apply!(out::AbstractVecOrMat, op::HarmonicStokesM2L, x::AbstractVecOrMat, α, work)
+    N = size(op.op)[1]
     for a in 1:4
-        mul!(_block(out, N, a), op.A, _block(x, N, a), T(α), false)
+        apply!(_block(out, N, a), op.op, _block(x, N, a), α, work)
     end
     o4 = _block(out, N, 4)
     for k in 1:3
@@ -79,8 +84,9 @@ function apply!(out::AbstractVecOrMat, op::HarmonicStokesM2L{T}, x::AbstractVecO
     end
     return out
 end
+apply!(out::AbstractVecOrMat, op::HarmonicStokesM2L, x::AbstractVecOrMat, α=true) = apply!(out, op, x, α, nothing)
 
-function level_operators(m::StokesHarmonics{K,T}, w::Real) where {K,T}
+function level_operators(m::StokesHarmonics{K,T,S}, w::Real) where {K,T,S}
     p = m.p
     N = (p + 1)^2
     sops = level_operators(_scalar_method(m, p), w)
@@ -100,11 +106,11 @@ function level_operators(m::StokesHarmonics{K,T}, w::Real) where {K,T}
         M2M[3N+1:4N, cj+3N+1:cj+4N] = Aj / 2
         L2L[cj+3N+1:cj+4N, 3N+1:4N] = 2 * Bj
     end
-    M2L = [HarmonicStokesM2L{T}(sops.M2L[f].A, SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
+    M2L = [HarmonicStokesM2L{T,S}(sops.M2L[f], SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
     return LevelOperators(sops.width, M2M, L2L, M2L, sops.extra)::operators_type(m)
 end
 
-function rescale(ref::LevelOperators{T,R,HarmonicExtras{R},HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}
+function rescale(ref::LevelOperators{T,R,HarmonicExtras{R},<:HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}
     λ = R(w) / ref.width
     return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
                        ref.m2l_scale / λ, HarmonicExtras{R}(ref.extra.scale / λ, ref.extra.tb))

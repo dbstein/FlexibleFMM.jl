@@ -16,7 +16,10 @@ that turn the accumulated partial expansions of a whole level into actual
 expansions. For the kernel-independent method the partials are check potentials and
 the transforms are pseudo-inverses; for the black-box method they are the identity.
 A method also states its `expansion_length`, its `operator_eltype`, and the kernel
-to use in the near field.
+to use in the near field. An M2L operator is dense (`M2LOperator`) or a truncated
+SVD (`LowRankM2L`, the harmonic methods' `tol`); both are applied through `apply!`,
+and the driver hands the low-rank form a workspace from the state (`workspace_rows`),
+so operators stay immutable and shared.
 
 Because the tree makes every translation a same-width one, `level_operators(m, w)`
 builds everything for width `w` once and an `OperatorCache` keyed by the integer

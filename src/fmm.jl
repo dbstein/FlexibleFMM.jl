@@ -85,11 +85,14 @@ function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,
 end
 
 # Default level-wise M2L: per far offset, gather the source multipoles, one GEMM,
-# scatter-add into the targets (a target appears at most once per offset).
+# scatter-add into the targets (a target appears at most once per offset). Low-rank
+# operators get their intermediate product from a workspace kept in the state.
 function m2l_level!(pL::AbstractMatrix, m::AbstractMethod, ops::LevelOperators, Mp::AbstractMatrix,
                     il::InteractionList, off::Int, state::FMMState)
     Nm = size(Mp, 1)
     pll = size(pL, 1)
+    rmax = maximum(workspace_rows, ops.M2L)
+    work = rmax == 0 ? nothing : _lowrank_workspace(state, rmax, size(state.work1, 2))
     for fidx in 1:length(ops.M2L)
         pr = pair_range(il, fidx)
         n = length(pr)
@@ -102,7 +105,7 @@ function m2l_level!(pL::AbstractMatrix, m::AbstractMethod, ops::LevelOperators, 
                 G[k, q] = Mp[k, s]
             end
         end
-        apply!(Rw, ops.M2L[fidx], G, ops.m2l_scale)
+        apply!(Rw, ops.M2L[fidx], G, ops.m2l_scale, work)
         @inbounds for (q, idx) in enumerate(pr)
             t = il.tgt[idx] - off
             for k in 1:pll
@@ -111,6 +114,15 @@ function m2l_level!(pL::AbstractMatrix, m::AbstractMethod, ops::LevelOperators, 
         end
     end
     return pL
+end
+
+function _lowrank_workspace(state::FMMState{S}, r::Int, n::Int) where {S}
+    w = get(state.scratch, :lowrank, nothing)
+    if w === nothing || size(w, 1) < r || size(w, 2) < n
+        w = Matrix{S}(undef, r, n)
+        state.scratch[:lowrank] = w
+    end
+    return w::Matrix{S}
 end
 
 # contiguous chunks of 1:n for threading

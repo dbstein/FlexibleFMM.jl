@@ -275,21 +275,26 @@ end
 
 # ---- the method ----
 
-struct SphericalHarmonics{K<:Laplace3D,T} <: AbstractMethod
+struct SphericalHarmonics{K<:Laplace3D,T,L} <: AbstractMethod      # L: the M2L operator type
     kernel::K
     p::Int
+    tol::Float64
 end
 
 """
-    SphericalHarmonics(kernel::Laplace3D; p=16)
+    SphericalHarmonics(kernel::Laplace3D; p=16, tol=0)
 
 The analytic multipole method for the 3D Laplace kernel: expansions in real solid
 harmonics up to degree `p` (`(p+1)²` coefficients), exact M2M and L2L, dense M2L
-operators per far offset. Charges and dipoles; potential and gradient outputs.
+operators per far offset, or, for `tol > 0`, their truncated SVDs with the singular
+values below `tol·σ₁` dropped (`LowRankM2L`; the translation error then floors near
+`tol`). Charges and dipoles; potential and gradient outputs.
 """
-function SphericalHarmonics(kernel::Laplace3D{T,PreciseMath}; p::Integer=16) where {T}
+function SphericalHarmonics(kernel::Laplace3D{T,PreciseMath}; p::Integer=16, tol::Real=0) where {T}
     p >= 1 || throw(ArgumentError("p must be at least 1"))
-    return SphericalHarmonics{typeof(kernel),T}(kernel, Int(p))
+    0 <= tol < 1 || throw(ArgumentError("tol must lie in [0, 1)"))
+    L = tol > 0 ? LowRankM2L{T} : M2LOperator{T}
+    return SphericalHarmonics{typeof(kernel),T,L}(kernel, Int(p), Float64(tol))
 end
 
 order(m::SphericalHarmonics) = m.p
@@ -297,7 +302,7 @@ dimension(::SphericalHarmonics) = 3
 expansion_length(m::SphericalHarmonics) = (m.p + 1)^2
 near_kernel(m::SphericalHarmonics) = m.kernel
 operator_eltype(::SphericalHarmonics{K,T}) where {K,T} = T
-operators_type(::SphericalHarmonics{K,T}) where {K,T} = LevelOperators{T,T,HarmonicExtras{T},M2LOperator{T}}
+operators_type(::SphericalHarmonics{K,T,L}) where {K,T,L} = LevelOperators{T,T,HarmonicExtras{T},L}
 supports_density(::SphericalHarmonics, ::Type) = false
 supports_density(::SphericalHarmonics, ::Type{<:Number}) = true
 supports_density(::SphericalHarmonics, ::Type{<:Dipole{3}}) = true
@@ -309,7 +314,7 @@ struct HarmonicExtras{T}
     tb::HarmonicTables{T}
 end
 
-function level_operators(m::SphericalHarmonics{K,T}, w::Real) where {K,T}
+function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K,T,L}
     p = m.p
     w = T(w)
     N = (p + 1)^2
@@ -332,7 +337,7 @@ function level_operators(m::SphericalHarmonics{K,T}, w::Real) where {K,T}
         push!(blocksL, Matrix{T}(real_operator(B, p)))
     end
     c = Float64(m.kernel.c) / Float64(w)
-    M2L = Vector{M2LOperator{T}}(undef, 7^3 - 3^3)
+    M2L = Vector{L}(undef, 7^3 - 3^3)
     for (f, off) in enumerate(far_offsets(Val(3)))
         Θ = irregular_hobson(SVector{3,Float64}(off), 2p)
         for k in 0:p, l in -k:k
@@ -341,10 +346,17 @@ function level_operators(m::SphericalHarmonics{K,T}, w::Real) where {K,T}
                 A[cidx(n, mm), cidx(k, l)] = sk * Θ[cidx(n + k, mm + l)] / s[cidx(n, mm)]
             end
         end
-        M2L[f] = M2LOperator(Matrix{T}(real_operator(A, p)))
+        M2L[f] = _m2l_operator(L, real_operator(A, p), m.tol)
     end
     return LevelOperators(w, reduce(hcat, blocksM), reduce(vcat, blocksL), M2L,
                           HarmonicExtras{T}(1 / w, harmonic_tables(p, T)))::operators_type(m)
+end
+
+_m2l_operator(::Type{M2LOperator{T}}, R::Matrix{Float64}, tol) where {T} = M2LOperator(Matrix{T}(R))
+function _m2l_operator(::Type{LowRankM2L{T}}, R::Matrix{Float64}, tol) where {T}
+    F = svd(R)
+    r = max(1, count(σ -> σ >= tol * F.S[1], F.S))
+    return LowRankM2L{T}(Matrix{T}(F.U[:, 1:r] .* transpose(F.S[1:r])), Matrix{T}(F.Vt[1:r, :]))
 end
 
 # M2M and L2L are width independent; the M2L carries 1/w.

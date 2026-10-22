@@ -4,7 +4,7 @@
 # end (potential, gradient, dipoles, Float32, dual positions).
 using FlexibleFMM: SphericalHarmonics, regular_hobson, irregular_hobson, cidx, tidx, scaling_factors,
     harmonic_tables, _fold_regular, complex_coefficients, real_coefficients, real_operator,
-    level_operators, order, rescale, multipole_field, nlevels
+    level_operators, order, rescale, multipole_field, nlevels, LowRankM2L, M2LOperator, workspace_rows, apply!
 
 rng = MersenneTwister(21)
 const KH = Laplace3D()
@@ -179,4 +179,52 @@ end
     parts(u) = [ForwardDiff.partials.(x, 1) for x in u]
     @test mrd(vals(u), vals(uref)) < 1e-5
     @test mrd(parts(u), parts(uref)) < 1e-4
+end
+
+@testset "low-rank translations" begin
+    A = randn(rng, 30, 30)
+    F = svd(A); r = 12
+    op = LowRankM2L{Float64}(F.U[:, 1:r] .* transpose(F.S[1:r]), F.Vt[1:r, :])
+    Ar = F.U[:, 1:r] * Diagonal(F.S[1:r]) * F.Vt[1:r, :]
+    x = randn(rng, 30); X = randn(rng, 30, 7)
+    @test apply!(zeros(30), op, x) ≈ Ar * x
+    @test apply!(zeros(30, 7), op, X, 2.0) ≈ 2Ar * X
+    work = zeros(20, 9); out = zeros(30, 7)
+    @test apply!(out, op, X, 1.5, work) ≈ 1.5Ar * X
+    @test @allocated(apply!(out, op, X, 1.5, work)) == 0
+    @test apply!(zeros(30), op, x, 1.0, zeros(15)) ≈ Ar * x
+    @test workspace_rows(op) == r && workspace_rows(M2LOperator(A)) == 0 && size(op) == (30, 30)
+    @test apply!(zeros(30, 7), M2LOperator(A), X, 1.0, work) ≈ A * X
+    @test_throws ArgumentError SphericalHarmonics(KH; p=16, tol=1.5)
+    # the method with tol: ranks, accuracy against the dense operators, rescaling, the driver
+    m = SphericalHarmonics(KH; p=16, tol=1e-7)
+    md = SphericalHarmonics(KH; p=16)
+    @test m isa SphericalHarmonics{<:Laplace3D,Float64,LowRankM2L{Float64}}
+    @test md isa SphericalHarmonics{<:Laplace3D,Float64,M2LOperator{Float64}}
+    ops = level_operators(m, 0.5)
+    ranks = [workspace_rows(o) for o in ops.M2L]
+    @info "p = 16, tol = 1e-7: ranks $(minimum(ranks))–$(maximum(ranks)), mean $(round(sum(ranks) / length(ranks), digits=1)) of 289"
+    @test maximum(ranks) < 289 && minimum(ranks) < 60
+    e = check_m2l_all_offsets(MersenneTwister(77), m, 0.37, 1e-5)          # the same sample for both
+    ed = maximum(m2l_errors(MersenneTwister(77), md, 0.37))
+    e6 = maximum(m2l_errors(MersenneTwister(77), SphericalHarmonics(KH; p=16, tol=1e-6), 0.37))
+    @info "p = 16: worst offset error dense $(round(ed, sigdigits=2)), tol = 1e-7 $(round(e, sigdigits=2)), tol = 1e-6 $(round(e6, sigdigits=2))"
+    @test e < 2ed + 1e-7
+    @test e6 < 2ed + 1e-6
+    r2 = rescale(ops, m, 1.0)
+    @test r2.M2L[5] === ops.M2L[5] && r2.m2l_scale ≈ 0.5
+    check_allocation_free(rng, m, 0.3; m2l=false)
+    N = 6000
+    pts = uniform_points3(rng, N); τ = randn(rng, N); targets = uniform_points3(rng, 300)
+    f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    @test haskey(st.scratch, :lowrank)
+    @test mrd(evaluate(f, st, targets), direct(KH, pts, τ, targets)) < 1e-5
+    fd = FMM(md, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    std = build_expansions(fd, pts, τ)
+    @test mrd(evaluate(f, st, targets), evaluate(fd, std, targets)) < 1e-6
+    build_expansions!(st, f, pts, τ)                       # the workspace is reused
+    @test mrd(evaluate(f, st, targets), evaluate(fd, std, targets)) < 1e-6
+    mf = SphericalHarmonics(Laplace3D(Float32); p=12, tol=1f-5)
+    @test level_operators(mf, 0.5f0).M2L[1] isa LowRankM2L{Float32}
 end
