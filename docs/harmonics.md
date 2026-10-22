@@ -328,6 +328,18 @@ series converge slowly relative to their own far field (the polynomial factors o
 tolerances are looser at `κw = 5` and the overall field unaffected. Not on the
 device yet (the kernels would need `κ̂` per level and the radial weights).
 
+Against FMM3D's Yukawa (`hfmm3d` with an imaginary wavenumber, `bench/compare`),
+`κ = 5`, `10⁵` points, `ppl = 200`, 12 threads, matvec and error against direct
+sums (the helix rows exclude the 0.19 s tree build counted in the library's total):
+
+| | harmonics p = 16, tol 1e-6 | harmonics p = 20, tol 1e-7 | cube p = 8 | FMM3D eps 1e-6 | FMM3D eps 1e-9 |
+|---|---|---|---|---|---|
+| uniform | 0.27 s, 1.8e-7 | 0.37 s, 1.4e-8 | 0.43 s, 4.3e-8 | 0.59 s, 1.5e-7 | 0.54 s, 4.8e-11 |
+| helix | 0.34 s, 9.4e-8 | 0.57 s, 1.1e-8 | 2.2 s, 2.1e-8 | 3.5 s, 1.5e-7 | 4.5 s, 1.9e-10 |
+
+At matched error the harmonic Yukawa method is 2× faster than FMM3D on uniform
+data and 10× on the fibre, where the cube method is 6× behind it.
+
 ## Next
 
 The JellySim backend on `StokesHarmonics`; the Yukawa method on the device.
