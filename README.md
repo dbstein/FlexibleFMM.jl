@@ -131,4 +131,4 @@ cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
   bench/gpu/metal_matvec.jl`)
 
 This is a port of the Python/numba `flexmm` package; the design decisions that
-differ from it are recorded in the docs.
+differ from it are recorded in the docs. MIT license (`LICENSE`).
