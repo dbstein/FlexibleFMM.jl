@@ -21,7 +21,9 @@
 # which is exact for both codes. The libraries' kernel normalisations differ from
 # ours; each case first calibrates the constant factor on a small problem and
 # reports it (a non-constant ratio would mean a different kernel). With
-# device=metal (Float32) or device=cuda (Float64; add CUDA.jl to this environment)
+# device=metal (Float32 by default) or device=cuda (Float64 by default; the
+# bench/cuda environment has CUDA.jl and the libraries), precision=float32|float64
+# sets ours (a card with weak Float64 wants float32),
 # our rows are the device matvec (DevicePlan + device_matvec!) and the device
 # evaluation at the targets (their location on the CPU excluded), the library rows
 # stay on the CPU; errors are still against the Float64 direct sum, so Float32 rows
@@ -47,7 +49,9 @@ elseif device == "cuda"
     using CUDA
 end
 to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : device == "ka_cpu" ? identity : nothing
-TP = device == "metal" ? Float32 : Float64              # our precision
+precision = get(args, "precision", device == "metal" ? "float32" : "float64")
+precision in ("float32", "float64") || error("precision must be float32 or float64")
+TP = precision == "float32" ? Float32 : Float64         # our precision (the libraries run in Float64)
 rng = MersenneTwister(1)
 const NT = 2000
 println("Julia threads ", Threads.nthreads(), ", OMP_NUM_THREADS ", get(ENV, "OMP_NUM_THREADS", "unset"), ", dim ", dim,

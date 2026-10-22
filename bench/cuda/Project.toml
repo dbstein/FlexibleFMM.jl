@@ -1,0 +1,17 @@
+# The CUDA environment for bench/bench.jl and bench/compare/compare.jl on a machine
+# with an NVIDIA GPU (no manifest is committed: `julia --project=bench/cuda -e
+# 'using Pkg; Pkg.instantiate()'` resolves it there). FMM2D/FMM3D are for the
+# comparison script only.
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+FMM2D = "2d63477d-9690-4b75-bcc1-c3461d43fecc"
+FMM3D = "1e13804c-f9b7-11ea-0ef0-29f3b1745df8"
+FlexibleFMM = "d62a88ff-728f-4e1a-a305-e911028260c3"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[sources]
+FlexibleFMM = {path = "../.."}

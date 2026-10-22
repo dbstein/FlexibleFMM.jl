@@ -6,15 +6,20 @@
 #     julia --project=. -t auto bench/bench.jl dim=3 N=100000 kernel=laplace,stokes method=cube:8
 #     julia --project=bench/gpu -t auto bench/bench.jl dim=3 N=100000 ppl=200 \
 #           kernel=laplace,stokes method=cube:8 device=metal
+#     julia --project=bench/cuda -t auto bench/bench.jl dim=3 N=100000 ppl=200 \
+#           kernel=laplace,stokes method=cube:8,harmonics:16:1e-6 device=cuda precision=float32
 #
 # Defaults: dim=2, N=100000, ppl=50, dist=uniform,circle,clustered (sphere for the circle in
 # 3D), kernel=laplace,helmholtz:10, method=ki:60,bb:12 (cube:8 in 3D). The kernel, method
 # and distribution specifications are those of common.jl. device=metal or device=cuda adds a
 # row per case with the device matvec (DevicePlan + device_matvec!) and the device
 # evaluation at the targets (their location on the CPU excluded, as it is reusable),
-# in Float32 on Metal and Float64 on CUDA; the kernel-independent methods only. Needs
-# Metal.jl or CUDA.jl in the environment: bench/gpu has Metal, or add them to the
-# default environment, on which the package environment stacks. device=ka_cpu runs
+# in the precision of precision=float32|float64 (Float32 on Metal by default, Float64
+# elsewhere: a card with weak Float64 wants precision=float32), for the
+# kernel-independent and harmonic methods. Needs Metal.jl or CUDA.jl in the
+# environment: bench/gpu has Metal, bench/cuda has CUDA (instantiate it on the
+# machine), or add them to the default environment, on which the package
+# environment stacks. device=ka_cpu runs
 # the same device passes through KernelAbstractions' CPU backend (Float64, Julia
 # threads, no package needed): the device code path without a device.
 #
@@ -114,5 +119,7 @@ elseif device == "cuda"
     using CUDA
 end
 to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : device == "ka_cpu" ? identity : nothing
-T = device == "metal" ? Float32 : Float64
+precision = get(args, "precision", device == "metal" ? "float32" : "float64")
+precision in ("float32", "float64") || error("precision must be float32 or float64")
+T = precision == "float32" ? Float32 : Float64
 main(dim, N, ppls, dists, kernels, methods, device, to, T)
