@@ -148,7 +148,12 @@ splitting them over Julia threads on the M3 Max (`docs/kifmm.md`); with
 `OPENBLAS_NUM_THREADS=1` they are split over Julia threads instead
 (`column_blocks`), the configuration for a node whose Julia threads are kept
 spinning (`JULIA_THREAD_SLEEP_THRESHOLD=infinite`, a region then costs 3 ms on the
-Genoa node) and where OpenBLAS's own threads would be starved by them. The
+Genoa node) and where OpenBLAS's own threads would be starved by them. It is a
+configuration to measure, not a default: on a 64-core Icelake node, where a
+region costs 40 µs, it is 1.5× slower (10⁶ sphere points, Stokes p = 6: matvec
+1.0 → 1.6 s, the pseudo-inverse transforms of the cube method 10× slower split
+over Julia threads than under OpenBLAS's 32 threads, and the spinning threads slow
+the working ones in the evaluation, 0.72 → 1.2 s). The
 per-offset M2L of the circle and non-covariant methods and the FFTW transforms
 of the cube method (planned with the Julia thread count, each execution
 spawning its tasks) still take a region per offset and per transform.

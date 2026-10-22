@@ -74,11 +74,12 @@ against the package's Julia-threaded phases, which costs the 3D matvec 1.3–1.7
 (`docs/kifmm.md`); the variable makes them sleep at once and is read when OpenBLAS
 starts, so it cannot be set from inside Julia. On Apple silicon, forwarding BLAS
 to Accelerate instead (`BLAS.lbt_forward` on the Accelerate framework with the
-ILP64 suffix) gives the same speed. On a many-core node where a thread region
-costs milliseconds (`bench/threads.jl` measures it; 30 ms on a 96-core Genoa
-node), run with `JULIA_THREAD_SLEEP_THRESHOLD=infinite OPENBLAS_NUM_THREADS=1`
-instead: the Julia threads keep spinning between regions and the large products
-are split over them (`docs/framework.md`, Threading).
+ILP64 suffix) gives the same speed. On a node where a thread region costs
+milliseconds (`bench/threads.jl` measures it; 30 ms on a 96-core Genoa node,
+40 µs on a 64-core Icelake node) try `JULIA_THREAD_SLEEP_THRESHOLD=infinite
+OPENBLAS_NUM_THREADS=1`: the Julia threads keep spinning between regions and the
+large products are split over them (`docs/framework.md`, Threading). Measure it:
+on the Icelake node, where regions are cheap, that configuration is 1.5× slower.
 
 The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArray)`
 (or `CuArray`) moves the operators and lists once, `device_matvec!` runs the
