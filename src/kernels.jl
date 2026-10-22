@@ -394,6 +394,12 @@ function _kernel_matrix(::Type{S}, K, sources, targets) where {m,n,S<:SMatrix{m,
     return A
 end
 
+# The sums over sources accumulate with `@fastmath`: a floating-point reduction can
+# only be vectorised across the sources if its additions may be reassociated (x86;
+# AArch64 vectorises strict reductions in order, and gains 1.6× from the
+# reassociation as well). Nothing else in the kernels is relaxed.
+@inline _accumulate(acc, v) = @fastmath acc + v
+
 # Accumulates Σ_{i ≠ skip} target_field(K, sources[i], t, τ[i], out) onto `acc`: the
 # excluded term masked (branch-free) when the kernel tolerates coincident points,
 # skipped otherwise.
@@ -401,12 +407,12 @@ end
     if masks_self(K)
         @inbounds @simd for i in eachindex(sources)
             v = target_field(K, sources[i], t, τ[i], out)
-            acc += ifelse(i == skip, zero(v), v)
+            acc = _accumulate(acc, ifelse(i == skip, zero(v), v))
         end
     else
         @inbounds for i in eachindex(sources)
             i == skip && continue
-            acc += target_field(K, sources[i], t, τ[i], out)
+            acc = _accumulate(acc, target_field(K, sources[i], t, τ[i], out))
         end
     end
     return acc

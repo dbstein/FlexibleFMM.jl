@@ -7,16 +7,18 @@
 # The excluded source is masked rather than skipped: a branch-free body vectorises
 # (1.5× for Laplace, 1.3× for Stokes measured); its value is computed at r = 0 and
 # discarded, never summed.
+# the sums accumulate through `_accumulate` (kernels.jl): reassociation allowed, so
+# that the loop vectorises across the sources
 @inline function _direct_range(K, xs, τ, x, r::UnitRange{Int}, skip::Int, acc, out)
     if masks_self(K)
         @inbounds @simd for j in r
             v = target_field(K, xs[j], x, τ[j], out)
-            acc += ifelse(j == skip, zero(v), v)
+            acc = _accumulate(acc, ifelse(j == skip, zero(v), v))
         end
     else                                            # a kernel that throws at r = 0: skip
         @inbounds for j in r
             j == skip && continue
-            acc += target_field(K, xs[j], x, τ[j], out)
+            acc = _accumulate(acc, target_field(K, xs[j], x, τ[j], out))
         end
     end
     return acc
