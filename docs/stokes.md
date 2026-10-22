@@ -105,7 +105,9 @@ supported. Each box carries `Ψ` relative to its own centre (changing the refere
 point adds a multiple of `Φ`, which the translations apply), so no digits are lost
 at evaluation; the price is the gradient at evaluation, which costs a factor of
 about `p` per derivative in the translation error, so stresslets and doublets are
-about `p²` less accurate than stokeslets at the same order.
+about `p²` less accurate than stokeslets at the same order. On fibre geometries
+(deep trees, small boxes) it is 4–5× faster than the cube method at equal
+accuracy, level on uniform data (`docs/harmonics.md`).
 
 The black-box method interpolates the stokeslet, so a singularity must be a
 differential operator in the source applied to the stokeslet: stokeslets (values of

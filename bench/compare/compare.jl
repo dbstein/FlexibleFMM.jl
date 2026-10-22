@@ -24,6 +24,7 @@
 # evaluation at the targets (their location on the CPU excluded), the library rows
 # stay on the CPU; errors are still against the Float64 direct sum, so Float32 rows
 # show Float32 rounding. Helmholtz stays on the CPU on Metal (no complex GEMM).
+# device=ka_cpu runs the device passes on KernelAbstractions' CPU backend (Float64).
 using FlexibleFMM, FMM2D, FMM3D, StaticArrays, Random, Printf, LinearAlgebra
 using FlexibleFMM: nlevels
 include(joinpath(@__DIR__, "..", "common.jl"))
@@ -37,13 +38,13 @@ kernels = String.(split(get(args, "kernel", dim == 2 ? "laplace,helmholtz:10,sto
 methods = String.(split(get(args, "method", dim == 2 ? "ki:30,ki:60,square:12" : "cube:6,cube:8,cube:10"), ","))
 epss = parse.(Float64, split(get(args, "eps", "1e-3,1e-6,1e-9"), ","))
 device = get(args, "device", "cpu")
-device in ("cpu", "metal", "cuda") || error("device must be cpu, metal or cuda")
+device in ("cpu", "ka_cpu", "metal", "cuda") || error("device must be cpu, ka_cpu, metal or cuda")
 if device == "metal"
     using Metal
 elseif device == "cuda"
     using CUDA
 end
-to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : nothing
+to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : device == "ka_cpu" ? identity : nothing
 TP = device == "metal" ? Float32 : Float64              # our precision
 rng = MersenneTwister(1)
 const NT = 2000

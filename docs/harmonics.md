@@ -149,7 +149,7 @@ whole multipole vector, the field is normalised by the attenuated far field):
 | worst offset error (one sample) | 9.1e-8 | 3.1e-7 | 9.1e-8 | 9.1e-8 | 9.1e-8 | 9.1e-8 |
 | mean rank of 441 | 441 | 54 | 70 | 87 | 106 | 127 |
 | M2L memory | 469 MB | 116 | 149 | 185 | 225 | 270 |
-| build (316 SVDs, `OPENBLAS_THREAD_TIMEOUT=4`) | 1.2 s | 10 s | 10 s | 10 s | 10 s | 10 s |
+| build, per offset before the classes (316 SVDs) | 1.2 s | 10 s | 10 s | 10 s | 10 s | 10 s |
 
 `10⁵` uniform points, `ppl = 200`, 12 threads (the error is against direct sums on
 1000 points and is set by `p`, not by `tol`, in this range):
@@ -175,9 +175,76 @@ circle method could take it the same way; their 2D operators are small enough
 not to need it); the cube method's CPU translation is spectral and its device
 plan already uses low-rank class factors (`docs/kifmm.md`).
 
+## Symmetry classes
+
+Of the 48 signed permutations of the axes only the 16 that keep the `z` axis (the
+group `D4h`) act on the real solid harmonics by signed permutations, and those act
+within one `(n, m)`: writing `R = Rot_z(kπ/2) ∘ Refl_y^εy ∘ Refl_z^εz`,
+`Υ_n^m(Rx) = i^{mk} (−1)^{(n+m)εz} [conj]^{εy} Υ_n^m(x)`, so a multipole transforms by
+`M_n^m → conj(c)·[conj]^{εy} M_n^m` and a local by `L_n^m → c·[conj]^{εy} L_n^m`,
+`c = i^{mk}(−1)^{(n+m)εz}` (the local of `Φ(R⁻¹x)`). The other 32 elements mix all
+`m` of a degree (Wigner rotations) and are not used. Under `D4h` the 316 far
+offsets fall into 34 classes (representative `(max(|o₁|,|o₂|), min(|o₁|,|o₂|), |o₃|)`,
+orbits of 16, 8, 4, 2) and `M2L_o = P_t·M2L_rep·P_sᵀ` with *different* permutations
+on the two sides (for a rotation `P_t = P_sᵀ`), which the cube method's classes
+never needed; `SymmetryClasses` therefore carries both sides, the cube constructor
+filling them identically, and `check_harmonic_classes` verifies the relation on
+every offset against the dense matrices (to `1e-13` at `p = 16`). The level
+operators hold the 34 representatives (dense or low rank) and one `PermutedM2L`
+per offset referring to them; the harmonic methods' `m2l_level!` gathers the pairs
+of a class with the source permutations (one column per pair and scalar expansion,
+four for Stokes), applies the representative in one GEMM per chunk, and scatters
+with the target permutations plus the Stokes coupling with each pair's own offset.
+The gather is threaded over columns and the scatter over rows in chunks aligned
+with the degree blocks, inside which every permutation acts (a chunk boundary
+splitting an `(n, m)` pair let two threads write one row; the test against the
+generic per-offset driver caught it). Build: 34 SVDs instead of 316; memory: 34
+operators instead of 316.
+
+Build time and memory of the 34 representatives (the per-offset build was 0.1–0.5 s
+dense and 10 s with the SVDs, 201–469 MB dense):
+
+| | p = 16 dense | p = 16, tol 1e-7 | p = 20 dense | p = 20, tol 1e-7 | p = 24 dense | p = 24, tol 1e-8 |
+|---|---|---|---|---|---|---|
+| build | 0.03 s | 0.42 s | 0.05 s | 1.1 s | 0.09 s | 2.3 s |
+| M2L memory | 22 MB | 11 MB | 50 MB | 18 MB | 101 MB | 33 MB |
+
+`10⁵` uniform points, `ppl = 200` (matvec, with the downward stage in parentheses;
+errors as in the tables above, unchanged by the classes):
+
+| | dense | tol = 1e-6 | tol = 1e-7 | tol = 1e-8 | cube p = 8 |
+|---|---|---|---|---|---|
+| Laplace p = 16 | 0.192 s (0.157) | 0.157 (0.123) | 0.168 (0.133) | | 0.152 (0.093) |
+| Laplace p = 20 | 0.334 (0.294) | | 0.241 (0.202) | 0.260 (0.221) | |
+| Stokes p = 16 | 0.735 (0.594) | 0.616 (0.474) | 0.654 (0.512) | | 1.035 (0.803) |
+| Stokes p = 20 | | | 1.03 (0.83) | | |
+
+The class-wise gather and scatter (threaded) and the bigger GEMMs take the
+downward stage from 0.217 to 0.157 s dense and from 0.147 to 0.123 s at
+`tol = 1e-6` for Laplace `p = 16`, and from 0.98 to 0.59 s and 0.74 to 0.47 s for
+Stokes. The harmonic Laplace method at `p = 16`, `tol = 1e-6` now costs the same as
+the cube method at `p = 8` (with 5× its error); the Stokes method is 1.7× faster
+than the cube method (3× its error).
+
+The fibre case is where the analytic method pays off. On a jittered helix of
+`10⁵` points (`helix_points`, the slender-body geometry: 7–9 levels, few points per
+box), errors against direct sums on 1000 points:
+
+| helix, `ppl` | harmonics p = 16, tol 1e-6 | harmonics p = 20, tol 1e-7 | cube p = 8 |
+|---|---|---|---|
+| Laplace, 100 | 0.54 s, 7.7e-8 | 1.03 s, 8.8e-9 | 3.10 s, 2.1e-8 |
+| Laplace, 200 | 0.29 s, 2.5e-8 | 0.47 s, 7.3e-9 | 1.42 s, 1.2e-8 |
+| Laplace, 400 | 0.13 s, 2.8e-8 | 0.20 s, 1.7e-9 | 0.50 s, 6.5e-9 |
+| Stokes, stokeslets + doublets, 200 | 1.91 s, 8.8e-10 | 4.26 s, 1.1e-10 | 10.5 s, 9.6e-10 (p = 10: 28.4 s, 3.0e-11) |
+
+At equal accuracy the harmonic methods are 4–5× faster than the cube method on
+the fibre, Laplace and Stokes alike: a deep tree with small boxes multiplies the
+cube method's per-box costs (1352 kernel evaluations per point upward, the FFTs
+and `(2p)³` spectra per box) while the harmonic per-box costs are `O(p²)` per
+point and one small column per box. On uniform data (above) the two are level.
+
 ## Next
 
-The 34 symmetry classes of the real harmonic basis (every hyperoctahedral
-operation is a signed permutation of it, mixing `Re` and `Im` of the same
-`(n, m)`): 34 SVDs instead of 316 at build time, and the class gather/GEMM/scatter
-of the device plan for both harmonic methods. Then Yukawa 3D on the same basis.
+The device plan for the harmonic methods (the two per-point kernels, the operator
+upload through the existing class gather/GEMM/scatter with the target-side
+permutations, no pseudo-inverse stages); Yukawa 3D on the same basis.

@@ -15,10 +15,10 @@ colleague sum. Four schemes are provided:
 - `BlackBox` — the Chebyshev interpolation FMM of Fong and Darve; needs only kernel
   evaluations, for any smooth translation-invariant kernel.
 - `SphericalHarmonics` — the classical analytic multipole method for `Laplace3D`:
-  real solid-harmonic expansions of degree `p`, exact M2M and L2L, dense M2L per
-  offset or their truncated SVDs (`tol`); charges and dipoles, potential and
-  gradient; `StokesHarmonics` carries the 3D Stokeslet on four such expansions
-  (`docs/harmonics.md`).
+  real solid-harmonic expansions of degree `p`, exact M2M and L2L, one M2L
+  operator per symmetry class of the far offsets (34), dense or a truncated SVD
+  (`tol`); charges and dipoles, potential and gradient; `StokesHarmonics` carries
+  the 3D Stokeslet on four such expansions (`docs/harmonics.md`).
 
 The code is generic over element types: complex kernels and densities, and
 `ForwardDiff.Dual` positions (directional/shape derivatives) go through unchanged.
@@ -93,7 +93,8 @@ Laplace (global errors about `1e-7`) and `3e-6`, `4e-5`, `1e-3` for stokeslets,
 stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`). The
 analytic method reaches `3e-6`, `3e-7`, `2e-8` global error at `p = 12, 16, 20` on
 uniform data, with a worst case (corner source facing a corner target) converging
-only as `0.7^p` (`docs/harmonics.md`).
+only as `0.7^p`; on fibre geometries the harmonic methods are 4–5× faster than the
+cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
 
 ## Layout
 
@@ -108,7 +109,8 @@ only as `0.7^p` (`docs/harmonics.md`).
 - `bench/bench.jl` — timings; `julia --project=. -t auto bench/bench.jl N=1000000`
   (kernel, method, distribution and `ppl` options in its header); with
   `device=metal` from the `bench/gpu` environment (`julia --project=bench/gpu -t auto
-  bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case
+  bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case;
+  `device=ka_cpu` runs the same passes on KernelAbstractions' CPU backend
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
   FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies; the
   same `kernel`, `method`, `dist`, `ppl` and `device` options as the benchmark plus

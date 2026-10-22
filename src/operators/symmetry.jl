@@ -40,16 +40,23 @@ canonical_offset(o::SVector{D,Int}) where {D} = SVector{D,Int}(sort(abs.(o); rev
     SymmetryClasses{D}
 
 For the far offsets of `far_offsets(Val(D))`: the class representatives, the class
-of each offset, and for each offset the signed permutation `(idx, sgn)` of the
-expansion entries with `(P·x)[idx[i]] = sgn[i]·x[i]`, so that
-`M2L_o · m = P · (M2L_rep · (Pᵀ·m))` with `(Pᵀ·m)[i] = sgn[i]·m[idx[i]]`.
+of each offset, and for each offset the signed permutations of the expansion
+entries, `(idx, sgn)` on the source side and `(idx_t, sgn_t)` on the target side,
+with `(P·x)[idx[i]] = sgn[i]·x[i]` and `(Pᵀ·m)[i] = sgn[i]·m[idx[i]]`, so that
+`M2L_o · m = P_t · (M2L_rep · (P_sᵀ·m))`. For the cube lattices the two sides are
+the same permutation (the four-argument constructor); for the harmonic basis a
+rotation acts on locals by the transpose of its action on multipoles. (The device
+plan uses the source side for both and takes kernel-independent methods only.)
 """
 struct SymmetryClasses{D}
     reps::Vector{SVector{D,Int}}
     class::Vector{Int}            # per far offset
-    idx::Vector{Vector{Int}}      # per far offset
+    idx::Vector{Vector{Int}}      # per far offset, source side
     sgn::Vector{Vector{Int8}}
+    idx_t::Vector{Vector{Int}}    # target side
+    sgn_t::Vector{Vector{Int8}}
 end
+SymmetryClasses{D}(reps, class, idx, sgn) where {D} = SymmetryClasses{D}(reps, class, idx, sgn, idx, sgn)
 
 """
     symmetry_classes(::Val{D}, p, embed, nc, augmented) -> SymmetryClasses
@@ -93,11 +100,11 @@ function symmetry_classes(::Val{D}, p::Int, embed::Vector{Int}, nc::Int, augment
     return SymmetryClasses{D}(reps, class, idxs, sgns)
 end
 
-# P·x and Pᵀ·x for the signed permutation (idx, sgn)
+# P_t·x (target side) and P_sᵀ·x (source side)
 function permute(sc::SymmetryClasses, f::Int, x::AbstractVector)
     y = similar(x)
     @inbounds for i in eachindex(x)
-        y[sc.idx[f][i]] = sc.sgn[f][i] * x[i]
+        y[sc.idx_t[f][i]] = sc.sgn_t[f][i] * x[i]
     end
     return y
 end
@@ -168,4 +175,83 @@ function class_factors(K, small::AbstractVector{SVector{D,R}}, embed::Vector{Int
         push!(A, F.U[:, 1:k] * Diagonal(F.S[1:k])); push!(Bt, Matrix(F.Vt[1:k, :])); push!(ranks, k)
     end
     return sc, A, Bt, ranks
+end
+
+# ---- the harmonic basis: the subgroup fixing the z axis ----
+#
+# Of the 48 signed permutations only the 16 that keep the z axis (D4h) act on the
+# real solid harmonics by signed permutations, each within one (n, m): writing
+# R = Rot_z(kπ/2) ∘ Refl_y^εy ∘ Refl_z^εz, Υ_n^m(R x) = i^{mk} (−1)^{(n+m)εz} [conj]^{εy} Υ_n^m(x),
+# so a multipole transforms by M_n^m → conj(c)·[conj]^{εy} M_n^m and a local by
+# L_n^m → c·[conj]^{εy} L_n^m, c = i^{mk} (−1)^{(n+m)εz} (the local of Φ(R⁻¹x)). The
+# other 32 elements mix all m of a degree (Wigner rotations). Under D4h the 316 far
+# offsets fall into 34 classes, representative (max(|o₁|,|o₂|), min(|o₁|,|o₂|), |o₃|).
+
+d4h_group() = [R for R in hyperoctahedral_group(Val(3)) if R.perm[3] == 3]
+harmonic_canonical_offset(o::SVector{3,Int}) = SVector(max(abs(o[1]), abs(o[2])), min(abs(o[1]), abs(o[2])), abs(o[3]))
+
+# R = Rot_z(kπ/2) ∘ Refl_y^εy ∘ Refl_z^εz
+function _d4h_factors(R::SignedPermutation{3})
+    R.perm[3] == 3 || throw(ArgumentError("not an element of D4h"))
+    εz = R.sign[3] == -1
+    A = zeros(Int, 2, 2)
+    A[1, R.perm[1]] = R.sign[1]; A[2, R.perm[2]] = R.sign[2]
+    εy = A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1] == -1
+    εy && (A[:, 2] .*= -1)                                    # A = Rot·diag(1, −1)
+    rots = ([1 0; 0 1], [0 -1; 1 0], [-1 0; 0 -1], [0 1; -1 0])
+    k = findfirst(==(A), rots)
+    k === nothing && throw(ArgumentError("not a rotation"))
+    return k - 1, εy, εz
+end
+
+# the signed permutation of the real storage for z → u·[conj]^εy z, u = i^{mk}(−1)^{(n+m)εz}
+# on the target side and its conjugate on the source side
+function _harmonic_permutation(p::Int, k::Int, εy::Bool, εz::Bool, target::Bool)
+    N = (p + 1)^2
+    idx = Vector{Int}(undef, N); sgn = Vector{Int8}(undef, N)
+    for n in 0:p
+        i0 = n * n + 1
+        idx[i0] = i0; sgn[i0] = εz && isodd(n) ? -1 : 1
+        for m in 1:n
+            ir = n * n + 2m; ii = ir + 1
+            q = mod(target ? m * k : -m * k, 4)
+            s = εz && isodd(n + m) ? -1 : 1
+            σ = εy ? -1 : 1                                     # the conjugation
+            if q == 0
+                idx[ir] = ir; sgn[ir] = s;  idx[ii] = ii; sgn[ii] = s * σ
+            elseif q == 1                                       # ×i: (re, im) → (−im, re)
+                idx[ir] = ii; sgn[ir] = s;  idx[ii] = ir; sgn[ii] = -s * σ
+            elseif q == 2
+                idx[ir] = ir; sgn[ir] = -s; idx[ii] = ii; sgn[ii] = -s * σ
+            else                                                # ×(−i): (re, im) → (im, −re)
+                idx[ir] = ii; sgn[ir] = -s; idx[ii] = ir; sgn[ii] = s * σ
+            end
+        end
+    end
+    return idx, sgn
+end
+
+"""
+    harmonic_symmetry_classes(p) -> SymmetryClasses{3}
+
+The 34 classes of the far offsets under D4h and, per offset, the source- and
+target-side signed permutations of the real harmonic storage of degree `p`.
+"""
+function harmonic_symmetry_classes(p::Int)
+    offs = far_offsets(Val(3))
+    G = d4h_group()
+    reps = SVector{3,Int}[]
+    class = Int[]; idxs = Vector{Int}[]; sgns = Vector{Int8}[]; idxt = Vector{Int}[]; sgnt = Vector{Int8}[]
+    for o in offs
+        r = harmonic_canonical_offset(o)
+        c = findfirst(==(r), reps)
+        c === nothing && (push!(reps, r); c = length(reps))
+        push!(class, c)
+        g = G[findfirst(R -> R(r) == o, G)]
+        k, εy, εz = _d4h_factors(g)
+        is, ss = _harmonic_permutation(p, k, εy, εz, false)
+        it, st = _harmonic_permutation(p, k, εy, εz, true)
+        push!(idxs, is); push!(sgns, ss); push!(idxt, it); push!(sgnt, st)
+    end
+    return SymmetryClasses{3}(reps, class, idxs, sgns, idxt, sgnt)
 end

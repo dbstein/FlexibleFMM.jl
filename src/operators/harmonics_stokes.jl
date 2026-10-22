@@ -22,7 +22,7 @@
 # and Hessians of the local expansions come from the derivative identities of
 # harmonics.jl as shifted coefficient sets.
 
-struct StokesHarmonics{K<:Stokeslet3D,T,S} <: AbstractMethod      # S: the scalar M2L operator type
+struct StokesHarmonics{K<:Stokeslet3D,T,S} <: HarmonicMethod      # S: the scalar M2L operator type
     kernel::K
     p::Int
     tol::Float64
@@ -44,11 +44,12 @@ function StokesHarmonics(kernel::Stokeslet3D{T,PreciseMath}; p::Integer=16, tol:
 end
 
 order(m::StokesHarmonics) = m.p
+_nblocks(::StokesHarmonics) = 4
 dimension(::StokesHarmonics) = 3
 expansion_length(m::StokesHarmonics) = 4 * (m.p + 1)^2
 near_kernel(m::StokesHarmonics) = m.kernel
 operator_eltype(::StokesHarmonics{K,T}) where {K,T} = T
-operators_type(::StokesHarmonics{K,T,S}) where {K,T,S} = LevelOperators{T,T,HarmonicExtras{T},HarmonicStokesM2L{T,S}}
+operators_type(::StokesHarmonics{K,T,S}) where {K,T,S} = LevelOperators{T,T,HarmonicExtras{T,S},HarmonicStokesM2L{T,PermutedM2L{S}}}
 supports_density(::StokesHarmonics, ::Type) = false
 supports_density(::StokesHarmonics, ::Type{<:SVector{3}}) = true
 supports_density(::StokesHarmonics, ::Type{<:Stresslet{3}}) = true
@@ -60,8 +61,10 @@ _scalar_method(m::StokesHarmonics{K,T}, p) where {K,T} = SphericalHarmonics(Lapl
 """
     HarmonicStokesM2L{T,S}
 
-The M2L of one far offset `o`: the scalar operator (of type `S`, dense or low rank)
-on each of the four blocks and the coupling `Ψ̂ += o·Φ`.
+The M2L of one far offset `o`: the scalar operator (of type `S`, a `PermutedM2L`
+of the class representative) on each of the four blocks and the coupling
+`Ψ̂ += o·Φ`; applied by the class-wise `m2l_level!` of harmonics.jl in the driver,
+block by block here for the checks.
 """
 struct HarmonicStokesM2L{T,S}
     op::S
@@ -106,14 +109,14 @@ function level_operators(m::StokesHarmonics{K,T,S}, w::Real) where {K,T,S}
         M2M[3N+1:4N, cj+3N+1:cj+4N] = Aj / 2
         L2L[cj+3N+1:cj+4N, 3N+1:4N] = 2 * Bj
     end
-    M2L = [HarmonicStokesM2L{T,S}(sops.M2L[f], SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
+    M2L = [HarmonicStokesM2L{T,PermutedM2L{S}}(sops.M2L[f], SVector{3,T}(off)) for (f, off) in enumerate(far_offsets(Val(3)))]
     return LevelOperators(sops.width, M2M, L2L, M2L, sops.extra)::operators_type(m)
 end
 
-function rescale(ref::LevelOperators{T,R,HarmonicExtras{R},<:HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}
+function rescale(ref::LevelOperators{T,R,<:HarmonicExtras{R},<:HarmonicStokesM2L{T}}, m::StokesHarmonics, w::Real) where {T,R}
     λ = R(w) / ref.width
     return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
-                       ref.m2l_scale / λ, HarmonicExtras{R}(ref.extra.scale / λ, ref.extra.tb))
+                       ref.m2l_scale / λ, _rescaled(ref.extra, λ))
 end
 
 partial_to_multipole!(M::AbstractVecOrMat, ::StokesHarmonics, ::LevelOperators, pM::AbstractVecOrMat, work) = copyto!(M, pM)

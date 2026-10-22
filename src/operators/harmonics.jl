@@ -275,7 +275,9 @@ end
 
 # ---- the method ----
 
-struct SphericalHarmonics{K<:Laplace3D,T,L} <: AbstractMethod      # L: the M2L operator type
+abstract type HarmonicMethod <: AbstractMethod end            # the methods on solid harmonics (Laplace, Stokes)
+
+struct SphericalHarmonics{K<:Laplace3D,T,L} <: HarmonicMethod      # L: the M2L operator type
     kernel::K
     p::Int
     tol::Float64
@@ -298,20 +300,68 @@ function SphericalHarmonics(kernel::Laplace3D{T,PreciseMath}; p::Integer=16, tol
 end
 
 order(m::SphericalHarmonics) = m.p
+_nblocks(::SphericalHarmonics) = 1                         # scalar expansions per box
 dimension(::SphericalHarmonics) = 3
 expansion_length(m::SphericalHarmonics) = (m.p + 1)^2
 near_kernel(m::SphericalHarmonics) = m.kernel
 operator_eltype(::SphericalHarmonics{K,T}) where {K,T} = T
-operators_type(::SphericalHarmonics{K,T,L}) where {K,T,L} = LevelOperators{T,T,HarmonicExtras{T},L}
+operators_type(::SphericalHarmonics{K,T,L}) where {K,T,L} = LevelOperators{T,T,HarmonicExtras{T,L},PermutedM2L{L}}
 supports_density(::SphericalHarmonics, ::Type) = false
 supports_density(::SphericalHarmonics, ::Type{<:Number}) = true
 supports_density(::SphericalHarmonics, ::Type{<:Dipole{3}}) = true
 supports_density(m::SphericalHarmonics, ::Type{T}) where {T<:Tuple} = all(S -> supports_density(m, S), fieldtypes(T))
 supports_output(::SphericalHarmonics, out) = out isa Potential || out isa Gradient
 
-struct HarmonicExtras{T}
+"""
+    PermutedM2L{L}
+
+The translation operator of one far offset as its class representative `op` (of
+type `L`, dense or low rank, shared by the offsets of the class) and the signed
+permutations of `SymmetryClasses`, `M2L_o·m = P_t·(op·(P_sᵀ·m))`. The class-wise
+`m2l_level!` of the harmonic methods applies the permutations in its gather and
+scatter; `apply!` here permutes per call (allocating), for the checks.
+"""
+struct PermutedM2L{L}
+    op::L
+    idx_s::Vector{Int}
+    sgn_s::Vector{Int8}
+    idx_t::Vector{Int}
+    sgn_t::Vector{Int8}
+end
+Base.size(op::PermutedM2L) = size(op.op)
+workspace_rows(op::PermutedM2L) = workspace_rows(op.op)
+function apply!(out::AbstractVecOrMat, op::PermutedM2L, x::AbstractVecOrMat, α=true)
+    xp = similar(x); y = similar(out)
+    @inbounds for j in axes(x, 2), i in axes(x, 1)
+        xp[i, j] = op.sgn_s[i] * x[op.idx_s[i], j]
+    end
+    apply!(y, op.op, xp, α)
+    @inbounds for j in axes(y, 2), i in axes(y, 1)
+        out[op.idx_t[i], j] = op.sgn_t[i] * y[i, j]
+    end
+    return out
+end
+apply!(out::AbstractVecOrMat, op::PermutedM2L, x::AbstractVecOrMat, α, work) = apply!(out, op, x, α)
+
+struct HarmonicExtras{T,L}
     scale::T                 # 1/w
     tb::HarmonicTables{T}
+    sc::SymmetryClasses{3}   # the 34 classes of the far offsets and their permutations
+    reps::Vector{L}          # the class representatives' operators (what `M2L` refers to)
+    offs::Vector{SVector{3,Int}}
+end
+_rescaled(e::HarmonicExtras{T,L}, λ) where {T,L} = HarmonicExtras{T,L}(e.scale / λ, e.tb, e.sc, e.reps, e.offs)
+
+# the dense real M2L matrix of the far offset `o` for the kernel constant `c` (c_K/w)
+function _harmonic_m2l(o::SVector{3,Int}, p::Int, c::Float64, s::Vector{Float64}, A::Matrix{ComplexF64})
+    Θ = irregular_hobson(SVector{3,Float64}(o), 2p)
+    for k in 0:p, l in -k:k
+        sk = (-1)^k * c / s[cidx(k, l)]
+        for n in 0:p, mm in -n:n
+            A[cidx(n, mm), cidx(k, l)] = sk * Θ[cidx(n + k, mm + l)] / s[cidx(n, mm)]
+        end
+    end
+    return real_operator(A, p)
 end
 
 function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K,T,L}
@@ -337,19 +387,11 @@ function level_operators(m::SphericalHarmonics{K,T,L}, w::Real) where {K,T,L}
         push!(blocksL, Matrix{T}(real_operator(B, p)))
     end
     c = Float64(m.kernel.c) / Float64(w)
-    M2L = Vector{L}(undef, 7^3 - 3^3)
-    for (f, off) in enumerate(far_offsets(Val(3)))
-        Θ = irregular_hobson(SVector{3,Float64}(off), 2p)
-        for k in 0:p, l in -k:k
-            sk = (-1)^k * c / s[cidx(k, l)]
-            for n in 0:p, mm in -n:n
-                A[cidx(n, mm), cidx(k, l)] = sk * Θ[cidx(n + k, mm + l)] / s[cidx(n, mm)]
-            end
-        end
-        M2L[f] = _m2l_operator(L, real_operator(A, p), m.tol)
-    end
+    sc = harmonic_symmetry_classes(p)
+    reps = L[_m2l_operator(L, _harmonic_m2l(r, p, c, s, A), m.tol) for r in sc.reps]
+    M2L = [PermutedM2L{L}(reps[sc.class[f]], sc.idx[f], sc.sgn[f], sc.idx_t[f], sc.sgn_t[f]) for f in eachindex(sc.class)]
     return LevelOperators(w, reduce(hcat, blocksM), reduce(vcat, blocksL), M2L,
-                          HarmonicExtras{T}(1 / w, harmonic_tables(p, T)))::operators_type(m)
+                          HarmonicExtras{T,L}(1 / w, harmonic_tables(p, T), sc, reps, far_offsets(Val(3))))::operators_type(m)
 end
 
 _m2l_operator(::Type{M2LOperator{T}}, R::Matrix{Float64}, tol) where {T} = M2LOperator(Matrix{T}(R))
@@ -360,10 +402,10 @@ function _m2l_operator(::Type{LowRankM2L{T}}, R::Matrix{Float64}, tol) where {T}
 end
 
 # M2M and L2L are width independent; the M2L carries 1/w.
-function rescale(ref::LevelOperators{T,R,HarmonicExtras{R}}, m::SphericalHarmonics, w::Real) where {T,R}
+function rescale(ref::LevelOperators{T,R,<:HarmonicExtras{R}}, m::SphericalHarmonics, w::Real) where {T,R}
     λ = R(w) / ref.width
     return typeof(ref)(R(w), ref.M2M, ref.L2L, ref.M2L, ref.m2m_scale, ref.l2l_scale,
-                       ref.m2l_scale / λ, HarmonicExtras{R}(ref.extra.scale / λ, ref.extra.tb))
+                       ref.m2l_scale / λ, _rescaled(ref.extra, λ))
 end
 
 function s2m!(col::AbstractVector, m::SphericalHarmonics, ops::LevelOperators, xs::AbstractVector,
@@ -444,4 +486,135 @@ function multipole_field(m::SphericalHarmonics, ops::LevelOperators, M::Abstract
     end
     v = acc * (m.kernel.c * ops.extra.scale)
     return eltype(M) <: Real ? real(v) : v
+end
+
+# ---- the class-wise translation of a level ----
+#
+# For each of the 34 classes, the pairs of all its offsets are gathered with the
+# source permutations into one matrix (one column per pair and scalar expansion; the
+# Stokes method has four, laid out as consecutive columns), translated by the class
+# representative in one GEMM (two for the low-rank form) and scattered with the
+# target permutations, plus the Stokes coupling Ψ̂ += o·Φ with each pair's own
+# offset. Pairs are taken in chunks that fit the state's workspace; the gather is
+# threaded over columns and the scatter over rows (the target permutations keep
+# the rows of different threads apart).
+function m2l_level!(pL::AbstractMatrix, m::HarmonicMethod, ops::LevelOperators,
+                    Mp::AbstractMatrix, il::InteractionList, off::Int, state::FMMState)
+    nb = _nblocks(m)
+    N = (m.p + 1)^2
+    e = ops.extra
+    cap = size(state.work1, 2)
+    G = reshape(view(state.work1, 1:N*nb*cap), N, nb * cap)
+    Rw = reshape(view(state.work2, 1:N*nb*cap), N, nb * cap)
+    rmax = maximum(workspace_rows, e.reps)
+    work = rmax == 0 ? nothing : _lowrank_workspace(state, rmax, nb * cap)
+    fs, qs = _class_columns(state, cap)
+    for c in eachindex(e.reps)
+        ncol = 0
+        for f in eachindex(e.sc.class)
+            e.sc.class[f] == c || continue
+            for q in pair_range(il, f)
+                ncol += 1
+                fs[ncol] = f; qs[ncol] = q
+                if ncol == cap
+                    _class_translate!(pL, Mp, il, off, e.reps[c], e, fs, qs, ncol, G, Rw, work, ops.m2l_scale, N, Val(nb))
+                    ncol = 0
+                end
+            end
+        end
+        ncol > 0 && _class_translate!(pL, Mp, il, off, e.reps[c], e, fs, qs, ncol, G, Rw, work, ops.m2l_scale, N, Val(nb))
+    end
+    return pL
+end
+function _class_columns(state::FMMState, cap::Int)
+    v = get(state.scratch, :class_columns, nothing)
+    if v === nothing || length(v[1]) < cap
+        v = (Vector{Int}(undef, cap), Vector{Int}(undef, cap))
+        state.scratch[:class_columns] = v
+    end
+    return v::Tuple{Vector{Int},Vector{Int}}
+end
+function _class_translate!(pL, Mp, il, off, rep, e::HarmonicExtras, fs, qs, ncol, G, Rw, work, α, N, ::Val{nb}) where {nb}
+    sc = e.sc
+    Threads.@threads :static for q in 1:ncol
+        @inbounds _gather_column!(G, Mp, il.src[qs[q]], sc.idx[fs[q]], sc.sgn[fs[q]], q, N, Val(nb))
+    end
+    apply!(view(Rw, :, 1:nb*ncol), rep, view(G, :, 1:nb*ncol), α, work)
+    rows = _degree_chunks(N, Threads.nthreads())
+    Threads.@threads :static for r in rows
+        _scatter_rows!(pL, Rw, il, off, sc, e.offs, fs, qs, ncol, r, N, Val(nb))
+    end
+    return pL
+end
+# the rows 1:N split at degree boundaries n², into about `nchunks` ranges
+function _degree_chunks(N::Int, nchunks::Int)
+    p = isqrt(N) - 1
+    out = UnitRange{Int}[]
+    lo = 1
+    for n in 0:p
+        hi = (n + 1)^2
+        if hi - lo + 1 >= N ÷ nchunks || n == p
+            push!(out, lo:hi)
+            lo = hi + 1
+        end
+    end
+    return out
+end
+@inline function _gather_column!(G, Mp, src::Int, idx, sgn, q::Int, N::Int, ::Val{nb}) where {nb}
+    @inbounds for a in 1:nb
+        col = (q - 1) * nb + a
+        o = (a - 1) * N
+        for i in 1:N
+            G[i, col] = sgn[i] * Mp[o+idx[i], src]
+        end
+    end
+    return G
+end
+function _scatter_rows!(pL, Rw, il, off, sc::SymmetryClasses, offs, fs, qs, ncol, rows::UnitRange{Int}, N::Int, ::Val{nb}) where {nb}
+    @inbounds for q in 1:ncol
+        f = fs[q]
+        t = il.tgt[qs[q]] - off
+        idx = sc.idx_t[f]; sgn = sc.sgn_t[f]
+        col = (q - 1) * nb
+        for a in 1:nb
+            o = (a - 1) * N
+            if nb == 4 && a == 4                       # Ψ̂ += o·Φ, with the pair's own offset
+                ov = offs[f]
+                for i in rows
+                    pL[o+idx[i], t] += sgn[i] * (Rw[i, col+4] + ov[1] * Rw[i, col+1] + ov[2] * Rw[i, col+2] + ov[3] * Rw[i, col+3])
+                end
+            else
+                for i in rows
+                    pL[o+idx[i], t] += sgn[i] * Rw[i, col+a]
+                end
+            end
+        end
+    end
+    return pL
+end
+
+"""
+    check_harmonic_classes(p; rtol=1e-12) -> maximum relative error
+
+Verifies `M2L_o = P_t·M2L_rep·P_sᵀ` on every far offset against the dense matrices
+of the harmonic basis of degree `p`.
+"""
+function check_harmonic_classes(p::Int; rtol=1e-12)
+    sc = harmonic_symmetry_classes(p)
+    s = scaling_factors(2p)
+    A = zeros(ComplexF64, (p + 1)^2, (p + 1)^2)
+    reps = [_harmonic_m2l(r, p, 1.0, s, A) for r in sc.reps]
+    worst = 0.0
+    for (f, o) in enumerate(far_offsets(Val(3)))
+        M = _harmonic_m2l(o, p, 1.0, s, A)
+        R = reps[sc.class[f]]
+        B = similar(M)
+        it = sc.idx_t[f]; st = sc.sgn_t[f]; is = sc.idx[f]; ss = sc.sgn[f]
+        for j in axes(M, 2), i in axes(M, 1)
+            B[it[i], is[j]] = st[i] * ss[j] * R[i, j]
+        end
+        worst = max(worst, maximum(abs.(M - B)) / maximum(abs.(M)))
+    end
+    worst <= rtol || throw(ArgumentError("the harmonic symmetry classes do not reproduce the translation operators (error $worst)"))
+    return worst
 end

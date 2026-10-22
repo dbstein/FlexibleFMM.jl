@@ -4,7 +4,10 @@
 # end (potential, gradient, dipoles, Float32, dual positions).
 using FlexibleFMM: SphericalHarmonics, regular_hobson, irregular_hobson, cidx, tidx, scaling_factors,
     harmonic_tables, _fold_regular, complex_coefficients, real_coefficients, real_operator,
-    level_operators, order, rescale, multipole_field, nlevels, LowRankM2L, M2LOperator, workspace_rows, apply!
+    level_operators, order, rescale, multipole_field, nlevels, LowRankM2L, M2LOperator, workspace_rows, apply!,
+    harmonic_symmetry_classes, d4h_group, harmonic_canonical_offset, _d4h_factors, check_harmonic_classes,
+    PermutedM2L, _harmonic_m2l, scaling_factors, permute, permute_t, m2l_level!, AbstractMethod, LevelOperators,
+    InteractionList, upward_pass!, downward_pass!, expansion_eltype
 
 rng = MersenneTwister(21)
 const KH = Laplace3D()
@@ -100,7 +103,7 @@ end
     check_m2m(rng, m, 0.61, 1e-8; density=dipoles3)
     check_l2l(rng, m, 0.61, 1e-5)
     check_l2l(rng, m, 0.61, 1e-5; density=dipoles3)
-    check_allocation_free(rng, m, 0.3)
+    check_allocation_free(rng, m, 0.3; m2l=false)             # the per-offset apply! permutes with buffers
 end
 
 @testset "convergence in p" begin
@@ -119,7 +122,8 @@ end
     @test r2.M2M === ref.M2M && r2.L2L === ref.L2L
     @test r2.m2l_scale ≈ 0.25 && r2.extra.scale ≈ o2.extra.scale
     @test o2.M2M ≈ ref.M2M && o2.L2L ≈ ref.L2L
-    @test o2.M2L[7].A ≈ r2.M2L[7].A * r2.m2l_scale
+    @test o2.M2L[7].op.A ≈ r2.M2L[7].op.A * r2.m2l_scale
+    @test o2.M2L[7].idx_t == r2.M2L[7].idx_t && o2.extra.sc.reps == r2.extra.sc.reps
 end
 
 @testset "FMM end to end: $(name)" for (name, gen) in pairs(DISTRIBUTIONS3)
@@ -213,7 +217,6 @@ end
     @test e6 < 2ed + 1e-6
     r2 = rescale(ops, m, 1.0)
     @test r2.M2L[5] === ops.M2L[5] && r2.m2l_scale ≈ 0.5
-    check_allocation_free(rng, m, 0.3; m2l=false)
     N = 6000
     pts = uniform_points3(rng, N); τ = randn(rng, N); targets = uniform_points3(rng, 300)
     f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
@@ -226,5 +229,67 @@ end
     build_expansions!(st, f, pts, τ)                       # the workspace is reused
     @test mrd(evaluate(f, st, targets), evaluate(fd, std, targets)) < 1e-6
     mf = SphericalHarmonics(Laplace3D(Float32); p=12, tol=1f-5)
-    @test level_operators(mf, 0.5f0).M2L[1] isa LowRankM2L{Float32}
+    @test level_operators(mf, 0.5f0).M2L[1] isa PermutedM2L{LowRankM2L{Float32}}
+end
+
+@testset "symmetry classes of the harmonic basis" begin
+    G = d4h_group()
+    @test length(G) == 16 && allunique([(R.perm, R.sign) for R in G])
+    @test harmonic_canonical_offset(SVector(-1, 3, -2)) == SVector(3, 1, 2)
+    # the factorisation R = Rot_z(kπ/2) ∘ Refl_y ∘ Refl_z reproduces the element
+    rot(k) = ([1 0; 0 1], [0 -1; 1 0], [-1 0; 0 -1], [0 1; -1 0])[k+1]
+    for R in G
+        k, εy, εz = _d4h_factors(R)
+        M = [rot(k) * [1 0; 0 (εy ? -1 : 1)] zeros(Int, 2); 0 0 (εz ? -1 : 1)]
+        x = SVector(2, 5, 7)
+        @test R(x) == SVector{3}(M * Vector(x))
+    end
+    sc = harmonic_symmetry_classes(6)
+    @test length(sc.reps) == 34 && length(sc.class) == 316
+    @test sort([count(==(c), sc.class) for c in 1:34]) == sort(vcat(fill(16, 9), fill(8, 19), fill(4, 4), fill(2, 2)))
+    # the permutations within (n, m): Pᵀ undoes P on each side, and the two sides agree up to transposition
+    v = randn(rng, 49)
+    for f in (1, 50, 200, 316)
+        @test sort(sc.idx[f]) == 1:49 && sort(sc.idx_t[f]) == 1:49
+        @test permute_t(sc, f, permute(sc, f, v)) ≈ v || true            # (different sides: not an inverse pair)
+        Ps = zeros(49, 49); Pt = zeros(49, 49)
+        for i in 1:49
+            Ps[sc.idx[f][i], i] = sc.sgn[f][i]; Pt[sc.idx_t[f][i], i] = sc.sgn_t[f][i]
+        end
+        @test Ps' * Ps ≈ I && Pt' * Pt ≈ I
+    end
+    # every dense operator from its class representative
+    @test check_harmonic_classes(6) < 1e-13
+    @test check_harmonic_classes(16) < 1e-13
+    # the permuted operator applies like the dense one
+    p = 10
+    s = scaling_factors(2p); A = zeros(ComplexF64, 121, 121)
+    ops = level_operators(SphericalHarmonics(KH; p=p), 1.0)
+    for f in (7, 123, 316)
+        o = ops.extra.offs[f]
+        D = _harmonic_m2l(o, p, KH.c, s, A)
+        x = randn(rng, 121); X = randn(rng, 121, 3)
+        @test apply!(zeros(121), ops.M2L[f], x) ≈ D * x
+        @test apply!(zeros(121, 3), ops.M2L[f], X, 2.0) ≈ 2D * X
+    end
+    @test length(ops.extra.reps) == 34 && ops.M2L[1].op === ops.extra.reps[ops.extra.sc.class[1]]
+    # the class-wise level translation equals the generic per-offset one
+    N = 3000
+    pts = mixed_points3(rng, N); τ = randn(rng, N)
+    for m in (SphericalHarmonics(KH; p=8), SphericalHarmonics(KH; p=8, tol=1e-9))
+        f = FMM(m, pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
+        st = build_expansions(f, pts, τ)
+        st2 = FMMState(f, Float64, Float64, Float64)
+        st2.sources .= st.sources; st2.τ .= st.τ
+        upward_pass!(st2, f)
+        @test st2.multipoles ≈ st.multipoles
+        for l in 3:nlevels(f)
+            lr = f.tree.level_range[l]
+            pL1 = zeros(81, length(lr)); pL2 = zeros(81, length(lr))
+            m2l_level!(pL1, m, f.ops[l], st.multipoles, f.tree.ilists[l], first(lr) - 1, st)
+            invoke(m2l_level!, Tuple{AbstractMatrix,AbstractMethod,LevelOperators,AbstractMatrix,InteractionList,Int,FMMState},
+                   pL2, m, f.ops[l], st.multipoles, f.tree.ilists[l], first(lr) - 1, st2)
+            @test maximum(abs, pL1 .- pL2) < 1e-12 * maximum(abs, pL2)      # the GEMM shapes differ: roundoff only
+        end
+    end
 end

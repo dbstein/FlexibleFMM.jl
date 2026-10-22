@@ -14,7 +14,9 @@
 # evaluation at the targets (their location on the CPU excluded, as it is reusable),
 # in Float32 on Metal and Float64 on CUDA; the kernel-independent methods only. Needs
 # Metal.jl or CUDA.jl in the environment: bench/gpu has Metal, or add them to the
-# default environment, on which the package environment stacks.
+# default environment, on which the package environment stacks. device=ka_cpu runs
+# the same device passes through KernelAbstractions' CPU backend (Float64, Julia
+# threads, no package needed): the device code path without a device.
 #
 # `ppl` is the maximum number of points per leaf: a node with more than `ppl` points
 # is split. It trades near-field work (∝ ppl per target) against the number of boxes
@@ -97,7 +99,7 @@ dists = String.(split(get(args, "dist", "uniform,circle,clustered"), ","))
 kernels = String.(split(get(args, "kernel", "laplace,helmholtz:10"), ","))
 methods = String.(split(get(args, "method", dim == 2 ? "ki:60,bb:12" : "cube:8"), ","))
 device = get(args, "device", "cpu")
-device in ("cpu", "metal", "cuda") || error("device must be cpu, metal or cuda")
+device in ("cpu", "ka_cpu", "metal", "cuda") || error("device must be cpu, ka_cpu, metal or cuda")
 # the device package is loaded at top level, in its own expression, so that the
 # bindings are visible to what follows
 if device == "metal"
@@ -105,6 +107,6 @@ if device == "metal"
 elseif device == "cuda"
     using CUDA
 end
-to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : nothing
+to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : device == "ka_cpu" ? identity : nothing
 T = device == "metal" ? Float32 : Float64
 main(dim, N, ppls, dists, kernels, methods, device, to, T)

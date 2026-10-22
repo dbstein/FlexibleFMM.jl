@@ -42,7 +42,7 @@ end
     check_m2m(rng, m, 0.61, 1e-7; density=doublets3)
     check_l2l(rng, m, 0.61, 1e-4)
     check_l2l(rng, m, 0.61, 1e-4; density=mixed_stokes3)
-    check_allocation_free(rng, m, 0.3)
+    check_allocation_free(rng, m, 0.3; m2l=false)
 end
 
 @testset "FMM end to end: $(name)" for (name, gen) in ((:uniform, uniform_points3), (:helix, helix_points), (:mixed, mixed_points3))
@@ -107,7 +107,8 @@ end
     m = StokesHarmonics(KSH; p=16, tol=1e-7)
     @test m isa StokesHarmonics{<:Stokeslet3D,Float64,FlexibleFMM.LowRankM2L{Float64}}
     ops = level_operators(m, 0.5)
-    @test ops.M2L[1] isa FlexibleFMM.HarmonicStokesM2L{Float64,FlexibleFMM.LowRankM2L{Float64}}
+    @test ops.M2L[1] isa FlexibleFMM.HarmonicStokesM2L{Float64,FlexibleFMM.PermutedM2L{FlexibleFMM.LowRankM2L{Float64}}}
+    @test length(ops.extra.reps) == 34
     @test FlexibleFMM.workspace_rows(ops.M2L[1]) == FlexibleFMM.workspace_rows(ops.M2L[1].op) > 0
     check_m2l_all_offsets(rng, m, 0.37, 1e-4)
     check_m2l_all_offsets(rng, m, 0.37, 1e-3; density=mixed_stokes3)
