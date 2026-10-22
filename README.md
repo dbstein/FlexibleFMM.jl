@@ -125,7 +125,9 @@ cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
   per-core rates, half the hardware threads by default); with
   `device=metal` from the `bench/gpu` environment (`julia --project=bench/gpu -t auto
   bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case;
-  `device=ka_cpu` runs the same passes on KernelAbstractions' CPU backend;
+  `device=ka_cpu` runs the same passes on KernelAbstractions' CPU backend (Julia
+  threads under KernelAbstractions 0.9, the POCL OpenCL runtime under 0.10, where
+  `POCL_DEBUG=all` explains a missing device);
   `device=cuda precision=float32` from the `bench/cuda` environment (instantiate
   it on the machine) on an NVIDIA card
 - `bench/threads.jl` — threading diagnostics for a machine (the cost of a thread
