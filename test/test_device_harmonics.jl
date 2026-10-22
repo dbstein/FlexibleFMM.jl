@@ -51,7 +51,7 @@ end
     f = FMM(m, pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
     st = build_expansions(f, pts, τ)
     plan = DevicePlan(f)
-    @test plan.nb == 4 && size(plan.Gc) == ((m.p + 1)^2, 4 * plan.chunk)
+    @test plan.nb == 4 && all(size(G) == ((m.p + 1)^2, 4len) for (len, G) in plan.Gc)
     ds = (sources=st.sources, τ=st.τ)
     device_build_expansions!(plan, ds)
     @test maximum(abs, plan.multipoles .- st.multipoles) < 1e-13 * maximum(abs, st.multipoles)

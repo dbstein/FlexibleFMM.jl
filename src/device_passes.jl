@@ -24,11 +24,15 @@ chunk instead of one, `4·n·k` flops per pair instead of `2·n²`; `tol` should
 below the accuracy of the order used (`1e-8` for Laplace at `p = 8`, `1e-6` for
 Stokes).
 """
-# The pairs of one class of one level, grouped by target, in a chunk of `chunk`
-# columns (padded with dummy pairs that no target reads): the gather fills a fixed
-# Nm × chunk buffer, one GEMM, and the scatter runs over the chunk's targets.
+# The pairs of one class of one level, grouped by target, in chunks of at most
+# `chunk` columns, each padded (with dummy pairs that no target reads) to the
+# power of two above its own size, `len`: the gather fills the Ns × nb·len buffer of
+# that size, one GEMM on it, and the scatter runs over the chunk's targets. (Padding
+# every chunk to `chunk` cost the 34-class harmonic methods 5× the real gather and
+# GEMM volume, and the cube method 4×.)
 struct ClassChunk{VI}
     class::Int
+    len::Int       # padded number of columns (pairs)
     src::VI        # global source node per column (padded)
     f::VI          # far offset per column
     tgt::VI        # local target index of each target in the chunk
@@ -53,7 +57,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     pinv_scale::Vector{Float64}
     M2Lc::Vector{Vector{M}}; m2l_scale::Vector{Float64}     # class operators per level (dense, or A of A·Bt)
     M2Lb::Vector{Vector{M}}                                  # Bt factors per level (empty vectors: dense)
-    Zc::Vector{M}                                            # per class: Bt·Gc work (rank × chunk)
+    Zc::Dict{Tuple{Int,Int},M}                               # per (class, chunk length): Bt·Gc work (rank × nb·len)
     idx::MI; inv::MI; sgn::MB; sgn_t::MB                     # Ns × nfar: the gather applies (idx, sgn), the scatter (inv of idx_t, sgn_t)
     nb::Int                                                  # scalar expansions per box (columns per pair)
     offs::VO                                                 # the far offsets (the Stokes coupling)
@@ -65,7 +69,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     B::Vector{M}; tM::Vector{M}                              # per level: children block and M2M output
     G::Vector{M}; Y::Vector{M}                               # per level: L2L input and output
     pL::Vector{M}; tdn::Vector{M}; Ldn::Vector{M}            # per level: partial locals, pinv work, densities
-    Gc::M; Yc::M                                             # class gather and GEMM output (max pairs)
+    Gc::Dict{Int,M}; Yc::Dict{Int,M}                         # per chunk length: class gather and GEMM output
 end
 
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) where {D,T}
@@ -164,7 +168,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
             for k in 1:chunk:length(pc)
                 pk = pc[k:min(k + chunk - 1, end)]
                 np = length(pk)
-                src = fill(Int32(1), chunk); fs = fill(Int32(1), chunk)
+                len = max(64, nextpow(2, np))
+                src = fill(Int32(1), len); fs = fill(Int32(1), len)
                 src[1:np] = [p[2] for p in pk]; fs[1:np] = [p[3] for p in pk]
                 tg = Int32[]; ptr = Int32[1]
                 for (q, p) in enumerate(pk)
@@ -172,11 +177,13 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
                     (q > 1 && p[1] != pk[q-1][1]) && push!(ptr, Int32(q))
                 end
                 push!(ptr, Int32(np + 1))
-                push!(chunks[l], ClassChunk{VI}(c, to(src), to(fs), to(tg), to(ptr)))
+                push!(chunks[l], ClassChunk{VI}(c, len, to(src), to(fs), to(tg), to(ptr)))
             end
         end
     end
     mk(r, c) = to(zeros(TO, r, c))
+    lens = unique([ch.len for l in 1:L for ch in chunks[l]])
+    isempty(lens) && push!(lens, 64)
     # the pseudo-inverse factors (placeholders for the harmonic methods)
     pm(get) = pinv ? [to(Matrix{TO}(get(f.ops[l].extra))) for l in 1:L] : [mk(1, 1) for l in 1:L]
     pv(get) = pinv ? [to(Vector{R}(get(f.ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
@@ -191,7 +198,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         pm(e -> e.P_up.Uh), pv(e -> e.P_up.invS), pm(e -> e.P_up.V),
         pm(e -> e.P_down.Uh), pv(e -> e.P_down.invS), pm(e -> e.P_down.V),
         pinv ? [Float64(f.ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
-        M2Lc, m2l_scale, M2Lb, [mk(max(1, k), nb * chunk) for k in (isempty(ranks) ? [1] : ranks)],
+        M2Lc, m2l_scale, M2Lb,
+        Dict((ch.class, ch.len) => mk(max(1, isempty(ranks) ? 1 : ranks[ch.class]), nb * ch.len) for l in 1:L for ch in chunks[l]),
         to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, chunks, chunk,
         mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),
         [mk(pml, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
@@ -200,7 +208,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         [mk(nc * Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L], [mk(Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L],
         [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
         [mk(pll, nl[l]) for l in 1:L], [mk(rdn(l), nl[l]) for l in 1:L], [mk(Nl, nl[l]) for l in 1:L],
-        mk(Ns, nb * chunk), mk(Ns, nb * chunk))
+        Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens))
     return plan
 end
 
@@ -384,12 +392,12 @@ function device_build_expansions!(plan::DevicePlan{D}, ds) where {D}
         end
         Ns = Nm ÷ plan.nb
         for ch in plan.chunks[l]
-            Gc, Yc = plan.Gc, plan.Yc
-            _class_gather!(backend, 256)(Gc, Mp, ch.src, ch.f, plan.idx, plan.sgn, Val(plan.nb); ndrange=Ns * plan.nb * plan.chunk)
+            Gc, Yc = plan.Gc[ch.len], plan.Yc[ch.len]
+            _class_gather!(backend, 256)(Gc, Mp, ch.src, ch.f, plan.idx, plan.sgn, Val(plan.nb); ndrange=Ns * plan.nb * ch.len)
             if isempty(plan.M2Lb[l])
                 mul!(Yc, plan.M2Lc[l][ch.class], Gc)
             else                                    # low-rank: A·(Bt·Gc)
-                Z = plan.Zc[ch.class]
+                Z = plan.Zc[(ch.class, ch.len)]
                 mul!(Z, plan.M2Lb[l][ch.class], Gc)
                 mul!(Yc, plan.M2Lc[l][ch.class], Z)
             end

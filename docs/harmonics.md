@@ -263,24 +263,28 @@ the CPU pass to `1e-13` and the matvec and every output to `1e-11`.
 Measured on an M3 Max in Float32 (`bench/bench.jl … device=metal`, `10⁵` points,
 `ppl = 200`; the device matvec, and the evaluation at `10⁶` uniform targets):
 
-| | harmonics p = 16, tol 1e-6 | harmonics p = 16 dense | cube p = 8 (dense classes) |
-|---|---|---|---|
-| Laplace, uniform: matvec / targets | 40 / 58 ms | 48 / 58 | 36 / 72 |
-| Stokes, uniform | 180 / 124 | 218 / 125 | 122 / 101 |
-| Laplace, helix | 68 / 8 | 77 / 7 | 75 / 21 |
-| Stokes, helix | 345 / 145 | 390 / 144 | 295 / 57 |
+| | harmonics p = 16, tol 1e-6 | cube p = 8 (dense classes) |
+|---|---|---|
+| Laplace, uniform: matvec / targets | 31 / 58 ms | 31 / 73 |
+| Stokes, uniform | 116 / 125 | 97 / 101 |
+| Laplace, helix | 52 / 7 | 66 / 21 |
+| Stokes, helix | 225 / 144 | 243 / 54 |
 
-(The dense column was measured with the earlier S2M kernel, one work-item per
-node; the per-order kernel took the low-rank column from 45 / 204 / 72 / 369 ms
-to the values shown.) Deviations from the CPU results are at the Float32 floor
-(`1e-6`–`1e-8`). On the device the two methods are level for Laplace and the
-harmonic Stokes matvec is 1.2–1.5× slower, the opposite of the CPU picture on the
-helix, where the cube method pays its per-box surface evaluations on 12 threads;
-on the GPU those are cheap. The S2M stage was part of the Stokes gap, not most of
-it: what remains is in the dense `4N × 32N` M2M and L2L (2.3× the flops of the
-seven nonzero blocks) and the four-column GEMMs of the translation, to be settled
-by a staged timing on the device. Target evaluation, one work-item per point with
-the `O(p²)` fold, is 1.3–3× faster than the cube's surface sums.
+Deviations from the CPU results are at the Float32 floor (`1e-6`–`1e-8`). Two
+steps got here. The first S2M kernel ran one work-item per childless node with a
+serial loop over its points; one work-item per (node, order) gained 5–12%. The
+larger cost was found by timing the stages with a synchronisation after each:
+the class gather and GEMM ran over chunks padded to 4096 columns for every class
+on every level, which with 34 classes (and orbits of 2–16 offsets, so many
+nearly empty classes on the coarse levels) was 5× the real volume, and 4× for
+the cube method's 16 classes; padding each chunk to the power of two above its
+own size, with buffers per size, took the harmonic Stokes matvec from 180 to
+116 ms and the cube's from 122 to 97 (uniform). On the device the methods are
+now level for Laplace, the harmonic method ahead on the helix for both kernels
+and behind by 1.2× for Stokes on uniform data; target evaluation, one work-item
+per point with the `O(p²)` fold, is 1.3–3× faster than the cube's surface sums.
+What remains of the Stokes gap is in the gather (four columns per pair) and the
+dense `4N × 32N` M2M and L2L.
 
 ## Next
 

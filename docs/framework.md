@@ -182,7 +182,10 @@ and `target_field` methods for the outputs it should support.
   lattices, 34 under the subgroup fixing the `z` axis for the harmonic basis,
   applied by signed permutations of the expansion entries on the source and the
   target side, verified against every offset in the tests), the pairs of each class grouped by target in
-  fixed-size chunks, and exact-size work buffers; `device_build_expansions!` runs
+  chunks of at most 4096 pairs, each padded to the power of two above its own
+  size (padding every chunk to 4096 cost the 34-class harmonic methods 5× and the
+  cube method 4× the real gather and GEMM volume), and exact-size work buffers
+  per chunk size; `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities; `device_matvec!` adds the self evaluation. Real expansions only
