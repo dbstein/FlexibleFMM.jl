@@ -68,7 +68,7 @@ function DeviceEvaluator(f::FMM{D}, to=identity; fast::Bool=false) where {D}
     n = nnodes(tree)
     far = _device_far(f, f.method, to)
     K = fast ? fastmath(near_kernel(f.method)) : near_kernel(f.method)
-    return DeviceEvaluator{D,typeof(K),typeof(to(tree.colleagues)),typeof(to(Int32[])),
+    return DeviceEvaluator{D,typeof(K),typeof(to(Int32.(tree.colleagues))),typeof(to(Int32[])),
                            typeof(to(SVector{D,eltype(tree.origin)}[])),typeof(far)}(
         K, to(Int32.(tree.colleagues)),
         to(Int32[first(r) for r in tree.points]), to(Int32[last(r) for r in tree.points]),
