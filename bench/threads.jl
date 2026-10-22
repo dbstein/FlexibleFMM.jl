@@ -38,6 +38,16 @@ let rng = MersenneTwister(2), n = 600, K = Stokeslet3D(Float32)
     reps = 2000
     tt = minimum(@elapsed(for _ in 1:reps; near(K, src, τ, x); end) for _ in 1:5)
     @printf "near field, one core, Float32 Stokeslet: %.0f M evaluations/s, %d vector float lines in the loop's IR\n" reps * n / tt / 1e6 nvec
+    # the same loop on structure-of-arrays storage (one vector per coordinate and
+    # density component): unit-stride loads instead of the stride-3 loads of a vector
+    # of points, which ARM loads with one instruction (ld3) and x86 with shuffles
+    X, Y, Z = [getindex.(src, k) for k in 1:3]
+    FX, FY, FZ = [getindex.(τ, k) for k in 1:3]
+    near_soa(K, X, Y, Z, FX, FY, FZ, x) = (acc = zero(SVector{3,Float32}); @inbounds @simd for j in eachindex(X)
+        acc += FlexibleFMM.source_field(K, SVector(X[j], Y[j], Z[j]), x, SVector(FX[j], FY[j], FZ[j])); end; acc)
+    near_soa(K, X, Y, Z, FX, FY, FZ, x) ≈ near(K, src, τ, x) || error("the two loops disagree")
+    ts = minimum(@elapsed(for _ in 1:reps; near_soa(K, X, Y, Z, FX, FY, FZ, x); end) for _ in 1:5)
+    @printf "near field, one core, the same on structure-of-arrays storage: %.0f M evaluations/s\n" reps * n / ts / 1e6
 end
 
 # 1. thread regions with no work: spawning the tasks and waking the threads
