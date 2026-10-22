@@ -53,10 +53,22 @@ flags reduce exactly to this.
    ever adds one (a leaf on the two deepest levels can never be "bad", and ghosts are
    only added below levels `2..L−1`). More than `ppl` coincident points would refine
    forever; `max_levels` guards against that.
-2. **Colleagues.** Per level, by lookup of `cell + offset` in a sorted key table.
-   Cells must be unique on a level, which is also what guarantees that a target
-   receives at most one source per far offset (so the M2L scatter-add has no write
-   conflicts).
+2. **Colleagues, by the parent rule.** The node at `c' = c + o` exists on the level
+   iff its parent cell `c' >> 1` exists on the level above and was split (every
+   level ≥ 2 consists of whole sibling groups), and `|c'_k − c_k| ≤ 1` gives
+   `⌊c'_k/2⌋ − ⌊c_k/2⌋ ∈ {−1, 0, 1}`, so that parent cell is at a colleague offset of
+   `parent(i)` and is read from its row; the colleague is then that node's child in
+   the slot of `c'`'s low bits. Cells outside the lattice have parent cells outside
+   the lattice above, absent by induction down to the root, whose row holds only
+   itself. So a level is tagged top-down from the one above in `3^D` lookups per
+   node, no sort, no search, and the retagging after a split below costs the same.
+   (The first version sorted a level's cells and searched `3^D` keys per node; on a
+   surface, where the ghost levels are the large ones, that was 0.67 of the 1.1 s
+   build of 10⁷ points, `docs/notes/tree_plan.md`.) Cells must be unique on a level,
+   which holds by construction (distinct parents have distinct prefixes, siblings
+   distinct low bits) and is asserted by the tests; it is also what guarantees that
+   a target receives at most one source per far offset (so the M2L scatter-add has
+   no write conflicts).
 3. **Level restriction.** With `depth` the height of a node's subtree, a leaf is
    *bad* if a colleague's depth differs from its own by more than one. Bad leaves are
    split, colleagues of the new level are retagged, depths recomputed, until no bad
@@ -75,7 +87,15 @@ flags reduce exactly to this.
 The builder works on growable per-level arrays and is flattened to global indices at
 the end; sibling groups of an appended level are contiguous in level order but not
 in parent order, so `group_parent[l][g]` records the parent of each group and the
-driver gathers by it (the Python used an `argsort` instead).
+driver gathers by it (the Python used an `argsort` instead). The splits, the
+tagging, the flattening and the interaction lists (a count pass, a prefix sum and a
+fill pass per level, each over the targets) run one thread region per level with
+their bodies in their own functions; the few large nodes of the first levels are
+sorted chunk-parallel, the same stable counting sort whatever the chunking, so the
+tree is independent of the thread count (asserted in `test/test_tree.jl`). The
+restriction scans and the depths are cheap and stay serial. 10⁷ sphere points at
+800 per leaf build in 0.21 s on 12 threads of an M3 Max (0.63 s on one; 1.1 s
+before), 10⁷ uniform points at 200 per leaf, 52 M pairs, in 0.33 s (1.5 s before).
 
 ## Why it works
 

@@ -245,3 +245,22 @@ end
     o, W = square_bbox([SVector(1e308, 0.0), SVector(1.1e308, 0.0)])   # the midpoint does not overflow
     @test isfinite(W) && all(isfinite, o)
 end
+
+@testset "the builder's threaded phases give the serial result" begin
+    # the chunk-parallel counting sort of the large nodes is forced onto small ranges
+    # and the tree compared field by field with the serial sort's (and the lists)
+    using FlexibleFMM: _PARALLEL_SORT_MIN
+    same(a, b) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(typeof(a)) if f !== :ilists)   # the lists: below, field by field
+    for (pts, ppl) in ((mixed_points(MersenneTwister(21), 30000), 40), (mixed_points3(MersenneTwister(22), 30000), 60))
+        box = (zero(eltype(pts)), 1.0)
+        ref = Tree(pts; ppl=ppl, bbox=box)
+        _PARALLEL_SORT_MIN[] = 0
+        try
+            t = Tree(pts; ppl=ppl, bbox=box)
+            @test same(t, ref) && all(same(a, b) for (a, b) in zip(t.ilists, ref.ilists))
+            @test Tree(pts; ppl=ppl, bbox=box).perm == ref.perm
+        finally
+            _PARALLEL_SORT_MIN[] = 100_000
+        end
+    end
+end

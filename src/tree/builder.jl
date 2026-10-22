@@ -1,6 +1,9 @@
 # Tree construction. A mutable per-level representation is refined, level restricted
 # and ghosted, then flattened into a `Tree`. Indices inside a `LevelBuilder` are local
-# to that level (parents index the previous level, children the next).
+# to that level (parents index the previous level, children the next). The threaded
+# phases (the splits, the colleague tagging, the flattening, the lists) run one region
+# per level with their bodies in their own functions, and every result is independent
+# of the thread count; the restriction scans and depths are cheap and stay serial.
 
 mutable struct LevelBuilder{D}
     cell::Vector{SVector{D,Int}}
@@ -33,21 +36,57 @@ Give each node `i ∈ which` of level `par` (level number `l`) its `2^D` childre
 appended to `chi`. The points of each node are counting-sorted in place by child slot
 (using `spts`/`sperm` as scratch) so that every child owns a contiguous range. With
 `ghost = true` the children are ghosts and the parent remains a leaf.
+
+Threaded over the nodes when there are many; the few large nodes of the first
+levels (the root holds every point) are each sorted chunk-parallel instead. Both
+are the same stable counting sort, so the result does not depend on the thread
+count or the chunking.
 """
 function split_nodes!(par::LevelBuilder{D}, which::AbstractVector{Int}, l::Int,
                       chi::LevelBuilder{D}, pts::Vector{SVector{D,T}}, perm::Vector{Int},
                       spts::Vector{SVector{D,T}}, sperm::Vector{Int},
                       origin::SVector{D,T}, W0::T; ghost::Bool) where {D,T}
+    nw = length(which)
+    nw == 0 && return nothing
     w = level_width(W0, l)
-    offs = child_offsets(Val(D))
     nc = 1 << D
-    counts = MVector{nc,Int}(undef)
-    starts = MVector{nc,Int}(undef)
-    pos = MVector{nc,Int}(undef)
-    for i in which
-        par.child_first[i] == 0 || error("node already has children")
-        lo, hi = par.lo[i], par.hi[i]
-        c = _center(origin, par.cell[i], w)
+    counts = Matrix{Int}(undef, nc, nw)
+    starts = Matrix{Int}(undef, nc, nw)
+    @inbounds for q in 1:nw
+        par.child_first[which[q]] == 0 || error("node already has children")
+    end
+    if nw < 4 * Threads.nthreads()
+        for q in 1:nw
+            i = which[q]
+            _sort_range!(pts, perm, spts, sperm, par.lo[i], par.hi[i], _center(origin, par.cell[i], w),
+                         view(counts, :, q), view(starts, :, q), true)
+        end
+    else
+        _split_many!(par, which, pts, perm, spts, sperm, origin, w, counts, starts)
+    end
+    _append_children!(par, which, chi, counts, starts, child_offsets(Val(D)), ghost)
+    return nothing
+end
+function _split_many!(par::LevelBuilder{D}, which, pts, perm, spts, sperm, origin, w, counts, starts) where {D}
+    Threads.@threads :dynamic for q in eachindex(which)
+        i = which[q]
+        _sort_range!(pts, perm, spts, sperm, par.lo[i], par.hi[i], _center(origin, par.cell[i], w),
+                     view(counts, :, q), view(starts, :, q), false)
+    end
+    return nothing
+end
+# ranges with at least this many points are sorted chunk-parallel (a Ref so that the
+# tests can force the chunked path on small inputs and compare with the serial one)
+const _PARALLEL_SORT_MIN = Ref(100_000)
+# Stable counting sort of pts[lo:hi] (and perm) by child slot against the center `c`,
+# serial, or chunk-parallel when allowed and the range is large: per-chunk histograms,
+# one exclusive scan in (slot, chunk) order, per-chunk stable scatter, copy back.
+function _sort_range!(pts::Vector{SVector{D,T}}, perm, spts, sperm, lo::Int, hi::Int, c::SVector{D,T},
+                      counts::AbstractVector{Int}, starts::AbstractVector{Int}, chunked::Bool) where {D,T}
+    nc = 1 << D
+    n = hi - lo + 1
+    nth = Threads.nthreads()
+    if !chunked || nth == 1 || n < _PARALLEL_SORT_MIN[]
         fill!(counts, 0)
         @inbounds for j in lo:hi
             counts[child_slot(pts[j], c)] += 1
@@ -55,8 +94,11 @@ function split_nodes!(par::LevelBuilder{D}, which::AbstractVector{Int}, l::Int,
         s = lo
         @inbounds for k in 1:nc
             starts[k] = s
-            pos[k] = s
             s += counts[k]
+        end
+        pos = MVector{nc,Int}(undef)
+        @inbounds for k in 1:nc
+            pos[k] = starts[k]
         end
         @inbounds for j in lo:hi
             k = child_slot(pts[j], c)
@@ -68,42 +110,146 @@ function split_nodes!(par::LevelBuilder{D}, which::AbstractVector{Int}, l::Int,
             pts[j] = spts[j]
             perm[j] = sperm[j]
         end
-        par.child_first[i] = nnodes(chi) + 1
-        ghost || (par.leaf[i] = false)
-        for k in 1:nc
-            _push_node!(chi, 2 * par.cell[i] + offs[k], i, starts[k], starts[k] + counts[k] - 1,
-                        !ghost, ghost)
+    else
+        chunks = [(lo + (q - 1) * n ÷ (4nth)):(lo + q * n ÷ (4nth) - 1) for q in 1:4nth]
+        hist = zeros(Int, nc, length(chunks))
+        _chunk_histograms!(hist, pts, chunks, c)
+        s = lo
+        @inbounds for k in 1:nc
+            starts[k] = s
+            for q in eachindex(chunks)
+                h = hist[k, q]
+                hist[k, q] = s
+                s += h
+            end
+            counts[k] = s - starts[k]
+        end
+        _chunk_scatter!(hist, pts, perm, spts, sperm, chunks, c)
+        _chunk_copy!(pts, perm, spts, sperm, chunks)
+    end
+    return nothing
+end
+function _chunk_histograms!(hist, pts, chunks, c)
+    Threads.@threads :dynamic for q in eachindex(chunks)
+        @inbounds for j in chunks[q]
+            hist[child_slot(pts[j], c), q] += 1
+        end
+    end
+    return nothing
+end
+function _chunk_scatter!(hist, pts, perm, spts, sperm, chunks, c)
+    Threads.@threads :dynamic for q in eachindex(chunks)
+        @inbounds for j in chunks[q]
+            k = child_slot(pts[j], c)
+            p = hist[k, q]
+            spts[p] = pts[j]
+            sperm[p] = perm[j]
+            hist[k, q] = p + 1
+        end
+    end
+    return nothing
+end
+function _chunk_copy!(pts, perm, spts, sperm, chunks)
+    Threads.@threads :dynamic for q in eachindex(chunks)
+        @inbounds for j in chunks[q]
+            pts[j] = spts[j]
+            perm[j] = sperm[j]
+        end
+    end
+    return nothing
+end
+# the children of the split nodes, appended to `chi` in the order of `which`, each
+# group in slot order (what `_push_node!` did one by one)
+function _append_children!(par::LevelBuilder{D}, which, chi::LevelBuilder{D}, counts, starts, offs, ghost::Bool) where {D}
+    nc = 1 << D
+    n0 = nnodes(chi)
+    nnew = nc * length(which)
+    for f in (chi.cell, chi.parent, chi.child_first, chi.lo, chi.hi, chi.leaf, chi.ghost, chi.xlist, chi.depth)
+        resize!(f, n0 + nnew)
+    end
+    Threads.@threads :dynamic for q in eachindex(which)
+        @inbounds begin
+            i = which[q]
+            par.child_first[i] = n0 + nc * (q - 1) + 1
+            ghost || (par.leaf[i] = false)
+            for k in 1:nc
+                g = n0 + nc * (q - 1) + k
+                chi.cell[g] = 2 * par.cell[i] + offs[k]
+                chi.parent[g] = i
+                chi.child_first[g] = 0
+                chi.lo[g] = starts[k, q]
+                chi.hi[g] = starts[k, q] + counts[k, q] - 1
+                chi.leaf[g] = !ghost
+                chi.ghost[g] = ghost
+                chi.xlist[g] = false
+                chi.depth[g] = 0
+            end
         end
     end
     return nothing
 end
 
 """
-    tag_colleagues!(L)
+    tag_colleagues!(lev, par), tag_root!(root)
 
-Fill `L.colleagues[k, i]` with the node at lattice offset `colleague_offsets(Val(D))[k]`
-from node `i`, or 0. Also checks that cells on the level are unique.
+Fill `lev.colleagues[k, i]` with the node of `lev` at lattice offset
+`colleague_offsets(Val(D))[k]` from node `i`, or 0, from the parent level's tables
+(the parent rule). The cell `c' = c + o` exists on the level iff its parent cell
+`c' >> 1` exists on the level above and was split, since every level ≥ 2 consists of
+whole sibling groups; and `|c'_k − c_k| ≤ 1` gives `⌊c'_k/2⌋ − ⌊c_k/2⌋ ∈ {−1, 0, 1}`
+(the arithmetic shift is the floor for `c'_k = −1`), so the parent cell of `c'` sits
+at a colleague offset of `parent(i)` and is read from that row; cells outside the
+lattice have parent cells outside the lattice above, absent by induction down to
+the root, whose row holds only itself. The colleague is then that node's child in
+the slot of `c'`'s low bits (`child_offsets`: coordinate 1 least significant). A
+ghost parent has no children and finds nothing, as before; a ghost child is tagged
+like any node. 3^D lookups per node, no sort, no search; cells are unique per level
+by construction (distinct parents have distinct prefixes, siblings distinct low
+bits), which the tree tests assert. (The first version sorted a level's cells and
+searched 3^D keys per node, re-run on whole levels after every restriction and
+ghost split: 0.67 of the 1.1 s build of 10⁷ sphere points, `docs/notes/tree_plan.md`.)
 """
-function tag_colleagues!(L::LevelBuilder{D}) where {D}
-    n = nnodes(L)
-    keys = [Tuple(c) for c in L.cell]
-    order = sortperm(keys)
-    sorted = keys[order]
-    for q in 2:n
-        sorted[q] == sorted[q-1] && error("duplicate cell on a level")
-    end
-    offs = colleague_offsets(Val(D))
-    L.colleagues = zeros(Int, 3^D, n)
-    for i in 1:n
-        for (k, o) in enumerate(offs)
-            key = Tuple(L.cell[i] + o)
-            j = searchsortedfirst(sorted, key)
-            if j <= n && sorted[j] == key
-                L.colleagues[k, i] = order[j]
+function tag_colleagues!(lev::LevelBuilder{D}, par::LevelBuilder{D}) where {D}
+    n = nnodes(lev)
+    size(lev.colleagues, 2) == n || (lev.colleagues = Matrix{Int}(undef, 3^D, n))
+    _tag_from_parents!(lev.colleagues, lev.cell, lev.parent, par.colleagues, par.child_first, colleague_offsets(Val(D)), n)
+    return lev
+end
+function _tag_from_parents!(col, cell, parent, pcol, pchild, offs, n)
+    Threads.@threads :dynamic for i in 1:n
+        @inbounds begin
+            c = cell[i]
+            p = parent[i]
+            pc = c .>> 1
+            for (k, o) in enumerate(offs)
+                cc = c + o
+                q = pcol[_offset_index((cc .>> 1) - pc), p]
+                col[k, i] = (q == 0 || pchild[q] == 0) ? 0 : pchild[q] + _slot_bits(cc) - 1
             end
         end
     end
-    return L
+    return col
+end
+# the slot of a parent-level offset in `colleague_offsets` (coordinate 1 fastest), and
+# the child slot of a cell's low bits (`child_offsets`)
+@inline function _offset_index(d::SVector{D,Int}) where {D}
+    k = 1
+    @inbounds for j in 1:D
+        k += (d[j] + 1) * 3^(j - 1)
+    end
+    return k
+end
+@inline function _slot_bits(c::SVector{D,Int}) where {D}
+    k = 1
+    @inbounds for j in 1:D
+        k += (c[j] & 1) << (j - 1)
+    end
+    return k
+end
+function tag_root!(root::LevelBuilder{D}) where {D}
+    root.colleagues = zeros(Int, 3^D, 1)
+    root.colleagues[self_colleague_slot(Val(D)), 1] = 1
+    return root
 end
 
 """
@@ -160,7 +306,7 @@ function level_restrict!(levels::Vector{LevelBuilder{D}}, pts, perm, spts, sperm
             end
             isempty(which) && continue
             split_nodes!(lev, which, l, levels[l+1], pts, perm, spts, sperm, origin, W0; ghost=false)
-            tag_colleagues!(levels[l+1])
+            tag_colleagues!(levels[l+1], lev)
             compute_depths!(levels)
             nsplit += length(which)
         end
@@ -199,7 +345,7 @@ function add_ghosts!(levels::Vector{LevelBuilder{D}}, pts, perm, spts, sperm, or
         which = findall(lev.xlist)
         isempty(which) && continue
         split_nodes!(lev, which, l, levels[l+1], pts, perm, spts, sperm, origin, W0; ghost=true)
-        tag_colleagues!(levels[l+1])
+        tag_colleagues!(levels[l+1], lev)
     end
     return levels
 end
@@ -228,7 +374,10 @@ function build_levels(pts::Vector{SVector{D,T}}, perm::Vector{Int}, origin::SVec
         split_nodes!(lev, which, length(levels), nxt, pts, perm, spts, sperm, origin, W0; ghost=false)
         push!(levels, nxt)
     end
-    foreach(tag_colleagues!, levels)
+    tag_root!(levels[1])
+    for l in 2:length(levels)
+        tag_colleagues!(levels[l], levels[l-1])
+    end
     level_restrict!(levels, pts, perm, spts, sperm, origin, W0)
     add_ghosts!(levels, pts, perm, spts, sperm, origin, W0)
     return levels
@@ -260,31 +409,11 @@ function flatten(levels::Vector{LevelBuilder{D}}, perm::Vector{Int}, origin::SVe
     colleagues = zeros(Int, 3^D, n)
     point_node = zeros(Int, length(perm))
     for l in 1:L
-        lev = levels[l]
-        for i in 1:nnodes(lev)
-            g = offs[l] + i
-            cell[g] = lev.cell[i]
-            level[g] = l
-            parent[g] = l == 1 ? 0 : offs[l-1] + lev.parent[i]
-            child_first[g] = lev.child_first[i] == 0 ? 0 : offs[l+1] + lev.child_first[i]
-            points[g] = lev.lo[i]:lev.hi[i]
-            leaf[g] = lev.leaf[i]
-            ghost[g] = lev.ghost[i]
-            xlist[g] = lev.xlist[i]
-            has_source[g] = lev.hi[i] >= lev.lo[i]
-            for k in 1:3^D
-                j = lev.colleagues[k, i]
-                colleagues[k, g] = j == 0 ? 0 : offs[l] + j
-            end
-            if lev.leaf[i]
-                for j in lev.lo[i]:lev.hi[i]
-                    point_node[j] == 0 || error("point assigned to two leaves")
-                    point_node[j] = g
-                end
-            end
-        end
+        _flatten_level!(levels[l], l, offs, cell, level, parent, child_first, points, leaf, ghost, xlist,
+                        has_source, colleagues, point_node, Val(D))
     end
     all(>(0), point_node) || error("point not assigned to a leaf")
+    sum(length(points[g]) for g in 1:n if leaf[g]) == length(perm) || error("point assigned to two leaves")
     group_parent = Vector{Vector{Int}}(undef, L)
     group_parent[1] = Int[]
     for l in 2:L
@@ -304,6 +433,35 @@ function flatten(levels::Vector{LevelBuilder{D}}, perm::Vector{Int}, origin::SVe
     return Tree{D,T}(origin, W0, level_range, cell, level, parent, child_first, points,
                      leaf, ghost, xlist, has_source, colleagues, group_parent, ilists,
                      perm, point_node, far_index)
+end
+
+# one level of `flatten`, threaded over its nodes (leaves write disjoint point ranges)
+function _flatten_level!(lev::LevelBuilder{D}, l::Int, offs, cell, level, parent, child_first, points, leaf, ghost, xlist,
+                         has_source, colleagues, point_node, ::Val{D}) where {D}
+    Threads.@threads :dynamic for i in 1:nnodes(lev)
+        @inbounds begin
+            g = offs[l] + i
+            cell[g] = lev.cell[i]
+            level[g] = l
+            parent[g] = l == 1 ? 0 : offs[l-1] + lev.parent[i]
+            child_first[g] = lev.child_first[i] == 0 ? 0 : offs[l+1] + lev.child_first[i]
+            points[g] = lev.lo[i]:lev.hi[i]
+            leaf[g] = lev.leaf[i]
+            ghost[g] = lev.ghost[i]
+            xlist[g] = lev.xlist[i]
+            has_source[g] = lev.hi[i] >= lev.lo[i]
+            for k in 1:3^D
+                j = lev.colleagues[k, i]
+                colleagues[k, g] = j == 0 ? 0 : offs[l] + j
+            end
+            if lev.leaf[i]
+                for j in lev.lo[i]:lev.hi[i]
+                    point_node[j] = g
+                end
+            end
+        end
+    end
+    return nothing
 end
 
 """
