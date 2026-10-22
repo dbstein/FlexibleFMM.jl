@@ -7,9 +7,9 @@
 #
 #     julia --project=bench/cuda -t auto bench/device_primitives.jl device=cuda [N=10000000]
 #     julia --project=bench/gpu  -t auto bench/device_primitives.jl device=metal
-using FlexibleFMM, StaticArrays, Random, Printf, LinearAlgebra
-using FlexibleFMM: KernelAbstractions, get_backend, _exclusive_scan!
-using KernelAbstractions: @kernel, @index, @Const, synchronize
+using FlexibleFMM, KernelAbstractions, StaticArrays, Random, Printf, LinearAlgebra
+using FlexibleFMM: _exclusive_scan!
+using KernelAbstractions: @kernel, @index, @Const, get_backend, synchronize
 include(joinpath(@__DIR__, "common.jl"))
 
 args = parse_kv(ARGS)
