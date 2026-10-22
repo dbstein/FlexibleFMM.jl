@@ -14,7 +14,7 @@ mixed3y(rng, K, n) = [(randn(rng), Dipole(randn(rng, P3))) for _ in 1:n]
     dfact(n) = prod(1:2:2n-1; init=1.0)                      # (2n−1)!!, 1 for n ≤ 0
     for z in (1e-6, 0.03, 0.7, 2.5, 9.0, 40.0)
         u = zeros(21); v = zeros(21)
-        _yukawa_u!(u, z, 20); _yukawa_v!(v, z, 20)
+        _yukawa_u!(u, z^2, 20); _yukawa_v!(v, z, 20)
         for n in 0:20
             i_n = sqrt(π / (2z)) * besseli(n + 0.5, z)
             k_n = sqrt(π / (2z)) * besselk(n + 0.5, z)
@@ -124,4 +124,28 @@ end
     parts(u) = [ForwardDiff.partials.(x, 1) for x in u]
     @test mrd(vals(u), vals(uref)) < 1e-4
     @test mrd(parts(u), parts(uref)) < 1e-3
+end
+
+@testset "review: derivatives at box centres" begin
+    K = Yukawa3D(3.0)
+    m = SphericalHarmonics(K; p=8)
+    ops = level_operators(m, 0.5)
+    L = randn(rng, 81)
+    # the potential and gradient are differentiable at the centre (no |x̂| in the way)
+    g0 = ForwardDiff.gradient(x -> l2t(m, ops, L, x), P3(0, 0, 0))
+    @test all(isfinite, g0) && g0 ≈ l2t(m, ops, L, P3(0, 0, 0), Gradient())
+    H0 = ForwardDiff.jacobian(x -> l2t(m, ops, L, x, Gradient()), P3(0, 0, 0))
+    @test all(isfinite, H0)
+    # through the public API: a target at a leaf centre with dual coordinates
+    N = 1500
+    pts = uniform_points3(rng, N); τ = randn(rng, N)
+    f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    i = findfirst(f.tree.leaf)
+    c = FlexibleFMM.center(f.tree, i)
+    D1 = ForwardDiff.Dual{:dc,Float64,1}
+    cd = SVector(D1(c[1], ForwardDiff.Partials((1.0,))), D1(c[2], ForwardDiff.Partials((0.0,))), D1(c[3], ForwardDiff.Partials((0.0,))))
+    u = evaluate(f, st, [cd])
+    @test isfinite(ForwardDiff.value(u[1])) && isfinite(ForwardDiff.partials(u[1], 1))
+    @test ForwardDiff.partials(u[1], 1) ≈ evaluate(f, st, [c]; output=Gradient())[1][1] rtol = 1e-8
 end

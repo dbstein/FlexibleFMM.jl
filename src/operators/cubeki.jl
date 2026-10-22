@@ -38,7 +38,7 @@ function CubeKernelIndependent{D}(kernel; p::Integer=8, pc::Integer=2p, d::Real=
                                   pinv_rtol::Real=50 * eps(floattype(kernel))) where {D}
     p >= 2 || throw(ArgumentError("p must be at least 2"))
     pc >= p || throw(ArgumentError("pc must be at least p"))
-    0 < d < 1 || throw(ArgumentError("d must lie in (0, 1)"))
+    0 < d < 2 / 3 || throw(ArgumentError("d must lie in (0, 2/3): the large surface, at (3 − 2d)w/2, must lie outside the small one, at (1 + d)w/2"))
     return CubeKernelIndependent{D,typeof(kernel)}(kernel, Int(p), Int(pc), Float64(d), Float64(pinv_rtol))
 end
 const SquareKernelIndependent = CubeKernelIndependent{2}

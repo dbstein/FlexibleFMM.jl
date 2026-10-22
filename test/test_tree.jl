@@ -237,3 +237,11 @@ end
     @test string(t1) == string(t2)
     @test occursin("ghosts", string(t1))
 end
+
+@testset "review: bounding boxes of bad points" begin
+    @test_throws ArgumentError square_bbox([SVector(NaN, 0.0)])
+    @test_throws ArgumentError square_bbox([SVector(Inf, 0.0), SVector(0.0, 0.0)])
+    @test_throws ArgumentError square_bbox([SVector(1e308, 0.0), SVector(-1e308, 0.0)])
+    o, W = square_bbox([SVector(1e308, 0.0), SVector(1.1e308, 0.0)])   # the midpoint does not overflow
+    @test isfinite(W) && all(isfinite, o)
+end

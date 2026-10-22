@@ -550,12 +550,12 @@ function _class_columns(state::FMMState, cap::Int)
 end
 function _class_translate!(pL, Mp, il, off, rep, e::HarmonicExtras, fs, qs, ncol, G, Rw, work, α, N, ::Val{nb}) where {nb}
     sc = e.sc
-    Threads.@threads :static for q in 1:ncol
+    Threads.@threads :dynamic for q in 1:ncol                # dynamic: composes with an outer threaded loop
         @inbounds _gather_column!(G, Mp, il.src[qs[q]], sc.idx[fs[q]], sc.sgn[fs[q]], q, N, Val(nb))
     end
     apply!(view(Rw, :, 1:nb*ncol), rep, view(G, :, 1:nb*ncol), α, work)
     rows = _degree_chunks(N, Threads.nthreads())
-    Threads.@threads :static for r in rows
+    Threads.@threads :dynamic for r in rows
         _scatter_rows!(pL, Rw, il, off, sc, e.offs, fs, qs, ncol, r, N, Val(nb))
     end
     return pL

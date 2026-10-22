@@ -211,3 +211,9 @@ end
     @test worst(SquareKernelIndependent(K; p=12, d=0.1)) < 2e-8
     @test worst(SquareKernelIndependent(K; p=12, d=0.05)) < 1e-8
 end
+
+@testset "review: the margin range" begin
+    @test_throws ArgumentError CubeKernelIndependent{3}(Laplace3D(); p=6, d=0.7)
+    @test_throws ArgumentError CubeKernelIndependent{3}(Laplace3D(); p=6, d=2 / 3)
+    @test CubeKernelIndependent{3}(Laplace3D(); p=6, d=0.6) isa CubeKernelIndependent
+end

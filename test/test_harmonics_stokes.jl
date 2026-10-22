@@ -145,3 +145,18 @@ end
     out = reshape(view(st, 1:32N*ng), 32N, ng)
     @test view(out, 1:N, :) isa StridedMatrix && reshape(view(work, 1:4N*ng), N, 4ng) isa StridedMatrix
 end
+
+@testset "review: real densities only, nested threading" begin
+    N = 500
+    pts = uniform_points3(rng, N)
+    f = FMM(StokesHarmonics(KSH; p=6), pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
+    @test_throws ArgumentError build_expansions(f, pts, [randn(rng, SVector{3,ComplexF64}) for _ in 1:N])
+    # independent states built inside an outer threaded loop
+    τs = [[randn(rng, P3) for _ in 1:N] for _ in 1:4]
+    refs = [evaluate_at_sources(f, build_expansions(f, pts, τ)) for τ in τs]
+    outs = Vector{Vector{P3}}(undef, 4)
+    Threads.@threads for k in 1:4
+        outs[k] = evaluate_at_sources(f, build_expansions(f, pts, τs[k]))
+    end
+    @test all(mrd(outs[k], refs[k]) < 1e-12 for k in 1:4)
+end

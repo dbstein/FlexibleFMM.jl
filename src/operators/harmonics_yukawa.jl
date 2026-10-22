@@ -38,14 +38,16 @@ end
 
 # u[n+1] = u_n(z), n = 0..nmax: backward recurrence u_n = u_{n+1} + z² u_{n+2}/((2n+3)(2n+5))
 # from a start above max(nmax, z), normalised with u_0 = sinh z / z
-@inline function _yukawa_u!(u, z, nmax::Int)
-    z2 = z * z
-    if _yk_value(z) < 1e-4                                     # the series' first two terms
+# u[n+1] = u_n(z) from z² (u_n is even in z, and the squared radius keeps the
+# derivative smooth at the box centre, where |x̂| is not differentiable)
+@inline function _yukawa_u!(u, z2, nmax::Int)
+    if _yk_value(z2) < 1e-8                                    # the series' first two terms
         @inbounds for n in 0:nmax
             u[n+1] = 1 + z2 / (2 * (2n + 3))
         end
         return u
     end
+    z = sqrt(z2)
     N = max(nmax, ceil(Int, _yk_value(z))) + 25
     a = zero(z); b = one(z)                                    # u_{N+1}, u_N (unnormalised)
     @inbounds for n in N-1:-1:0
@@ -98,7 +100,7 @@ function _sphere_quadrature(p::Int)
 end
 # the regular real basis at y: u_n(κ̂|y|) [Υ̃_n^0 | 2 Re Υ̃ | 2 Im Υ̃](y)
 function _yukawa_regular!(b, y::SVector{3}, κ̂, p::Int, tb::HarmonicTables, u)
-    _yukawa_u!(u, κ̂ * norm(y), p)
+    _yukawa_u!(u, (κ̂ * norm(y))^2, p)
     _fold_regular(nothing, y, p, tb) do _, n, m, vr, vi
         w = u[n+1]
         if m == 0
@@ -146,7 +148,7 @@ function _projection(p::Int, κ̂::Float64, ρ::Float64, irregular::Bool, pts, w
         B[:, q] = buf .* wts[q]
     end
     rad = zeros(p + 1)
-    irregular ? _yukawa_v!(rad, κ̂ * ρ, p) : _yukawa_u!(rad, κ̂ * ρ, p)
+    irregular ? _yukawa_v!(rad, κ̂ * ρ, p) : _yukawa_u!(rad, (κ̂ * ρ)^2, p)
     for n in 0:p
         f = irregular ? rad[n+1] * ρ^(-n - 1) : rad[n+1] * ρ^n
         γ0 = 4π / (2n + 1)
@@ -223,9 +225,9 @@ end
 
 # u_0..u_nmax as an immutable vector, so that the weight functors are isbits and the
 # bodies stay allocation-free
-@inline function _radial_weights(z, nmax::Int)
-    u = MVector{64,typeof(z)}(undef)
-    _yukawa_u!(u, z, nmax)
+@inline function _radial_weights(z2, nmax::Int)
+    u = MVector{64,typeof(z2)}(undef)
+    _yukawa_u!(u, z2, nmax)
     return SVector(u)
 end
 
@@ -264,7 +266,7 @@ function s2m!(col::AbstractVector, m::SphericalHarmonics{<:Yukawa3D}, ops::Level
     end
     @inbounds for i in eachindex(xs)
         x̂ = (xs[i] - c) * s
-        u = _radial_weights(κ̂ * norm(x̂), p + 1)
+        u = _radial_weights(κ̂ * κ̂ * sum(abs2, x̂), p + 1)
         _yukawa_accumulate!(col, x̂, p, tb, _scaled_density(τs[i], s), u, κ̂)
     end
     return col
@@ -273,14 +275,14 @@ end
 @inline function l2t(m::SphericalHarmonics{<:Yukawa3D}, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Potential=Potential())
     κ̂ = ops.extra.κ̂
     x̂ = xrel * ops.extra.scale
-    u = _radial_weights(κ̂ * norm(x̂), m.p)
+    u = _radial_weights(κ̂ * κ̂ * sum(abs2, x̂), m.p)
     return _harmonic_potential(L, x̂, m.p, ops.extra.tb, _DegreeWeight(u))
 end
 @inline function l2t(m::SphericalHarmonics{<:Yukawa3D}, ops::LevelOperators, L::AbstractVector, xrel::SVector{3}, ::Gradient)
     κ̂ = ops.extra.κ̂
     s = ops.extra.scale
     x̂ = xrel * s
-    u = _radial_weights(κ̂ * norm(x̂), m.p + 1)
+    u = _radial_weights(κ̂ * κ̂ * sum(abs2, x̂), m.p + 1)
     g = _harmonic_gradient(L, x̂, m.p, ops.extra.tb, _DegreeWeight(u))
     return (g + x̂ * _harmonic_potential(L, x̂, m.p, ops.extra.tb, _RadialWeight(u, κ̂ * κ̂))) * s
 end

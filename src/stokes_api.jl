@@ -39,10 +39,11 @@ _values(pts::AbstractVector{<:SVector{D}}) where {D} = [SVector{D}(map(_value, p
 
 function StokesFMMPlan(sources; targets=nothing, method::Union{Nothing,Symbol}=nothing, nequiv::Integer=60,
                        p::Union{Nothing,Integer}=nothing, pc::Union{Nothing,Integer}=nothing, d::Real=0.1,
-                       ppl::Integer=50, bbox=nothing, precision::Type{<:AbstractFloat}=Float64, cache=nothing,
-                       tol::Real=0)
+                       ppl::Union{Nothing,Integer}=nothing, bbox=nothing, precision::Type{<:AbstractFloat}=Float64,
+                       cache=nothing, tol::Real=0)
     D = point_dimension(sources)
     method === nothing && (method = D == 2 ? :ki : :cube)
+    ppl === nothing && (ppl = D == 2 ? 50 : 200)             # 3D trees fragment on surfaces and fibres (docs/kifmm.md)
     p === nothing && (p = D == 2 ? 12 : method === :harmonics ? 16 : 8)
     pc === nothing && (pc = 2p)
     K = stokeslet_kernel(Val(D), precision)

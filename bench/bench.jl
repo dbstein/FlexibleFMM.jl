@@ -24,7 +24,9 @@
 # method and the expansion order.
 #
 # Phases, in milliseconds: tree (FMM construction: tree and operator lookup; built
-# once), up and down (the expansion passes), self (evaluation at the sources). The
+# once), first (the first application of a fresh state: it creates the method's
+# workspaces, so it is reported apart), then up and down (the expansion passes) and
+# self (evaluation at the sources), each the best of three warm repetitions. The
 # "matvec" total is up + down + self, the cost of one iteration of a solver that
 # applies the operator to new densities on the same points; "with tree" adds the
 # construction. Target evaluation at 10⁶ uniform targets is timed separately.
@@ -51,13 +53,16 @@ function run_case(label, m, pts, τ, targets; ppl, to=nothing)
     st = FMMState(f, expansion_eltype(m, T, eltype(τ)), T, eltype(τ))
     perm = f.tree.perm
     st.sources .= pts[perm]; st.τ .= τ[perm]
-    t_up = @elapsed upward_pass!(st, f)
-    t_down = @elapsed downward_pass!(st, f)
+    # the first application of a fresh state (it creates the method's workspaces, the
+    # spectral one of the cube method in particular), then the warm passes, best of three
+    t_first = @elapsed (upward_pass!(st, f); downward_pass!(st, f); evaluate_at_sources(f, st))
+    t_up = minimum(@elapsed(upward_pass!(st, f)) for _ in 1:3)
+    t_down = minimum(@elapsed(downward_pass!(st, f)) for _ in 1:3)
     local us, ut
-    t_self = @elapsed us = evaluate_at_sources(f, st)
-    t_targ = @elapsed ut = evaluate(f, st, targets)
+    t_self = minimum(@elapsed(us = evaluate_at_sources(f, st)) for _ in 1:3)
+    t_targ = minimum(@elapsed(ut = evaluate(f, st, targets)) for _ in 1:3)
     t_mv = t_up + t_down + t_self
-    @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
+    @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | first %7.1f | up %7.1f | down %7.1f | self %7.1f | matvec %7.1f ms (%5.0f kpts/s/core) | with tree %7.1f ms (%5.0f) | targets %7.1f ms (%5.0f)\n" label ppl N nlevels(f) 1e3t_tree 1e3t_first 1e3t_up 1e3t_down 1e3t_self 1e3t_mv kpsc(N, t_mv) 1e3(t_tree + t_mv) kpsc(N, t_tree + t_mv) 1e3t_targ kpsc(Nt, t_targ)
     if to !== nothing && m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod}   # the device passes
         plan = DevicePlan(f, to)
         ds = (sources=to(st.sources), τ=to(st.τ))

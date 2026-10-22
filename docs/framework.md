@@ -184,15 +184,19 @@ and `target_field` methods for the outputs it should support.
   of the far offsets (`src/operators/symmetry.jl`: 16 classes in 3D for the cube
   lattices, 34 under the subgroup fixing the `z` axis for the harmonic basis,
   applied by signed permutations of the expansion entries on the source and the
-  target side, verified against every offset in the tests), the pairs of each class grouped by target in
-  chunks of at most 4096 pairs, each padded to the power of two above its own
+  target side, verified against every offset in the tests), the pairs of each class grouped by target (the classes rest on the kernel's
+  covariance under the signed axis permutations, `covariant(K)`, true for the radial
+  kernels and the Stokeslets; a merely translation-invariant kernel takes one dense
+  operator per offset) in chunks of at most 4096 pairs, each padded to the power of two above its own
   size (padding every chunk to 4096 cost the 34-class harmonic methods 5× and the
   cube method 4× the real gather and GEMM volume), and exact-size work buffers
   per chunk size; `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
-  densities; `device_matvec!` adds the self evaluation. Real expansions only
-  (dual numbers take the CPU passes and the device evaluation). The harmonic
+  densities; `device_matvec!` adds the self evaluation. Real expansions, or
+  complex ones through `DevicePlan(f, to; eltype=ComplexF64)`, which promotes the
+  operators (no complex GEMM on Metal); dual numbers take the CPU passes and the
+  device evaluation. The harmonic
   methods take the same plan with their own far-field data (`DeviceHarmonic`:
   the scale per level and the recurrence tables, adapted to device arrays), an
   S2M kernel and an evaluation kernel that run the CPU folds, the class

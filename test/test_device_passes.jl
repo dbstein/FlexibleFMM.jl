@@ -48,3 +48,42 @@ end
     @test mrd(u, evaluate_at_sources(f, st)) < errtol       # the compression sits below the method's accuracy
     @test mrd(u, direct_self(K, pts, τ)) < 10errtol
 end
+
+@testset "review: covariance, per-level ranks, complex densities" begin
+    using FlexibleFMM: covariant, M2LOperator
+    @test covariant(Laplace3D()) && covariant(Stokeslet3D()) && covariant(Yukawa3D(2.0)) && covariant(Laplace2D())
+    @test !covariant(LaplaceDipoleTest(0.8)) && !covariant((s, t) -> 1.0)
+    rngr = MersenneTwister(77)
+    # a translation-invariant kernel without rotational covariance takes one operator per offset
+    K = LaplaceDipoleTest(0.8)
+    pts = [rand(rngr, SVector{2,Float64}) for _ in 1:700]
+    τ = randn(rngr, 700)
+    f = FMM(SquareKernelIndependent(K; p=8), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
+    st = build_expansions(f, pts, τ)
+    plan = DevicePlan(f)
+    @test length(plan.M2Lc[3]) == 40
+    out = zeros(700)
+    device_matvec!(out, plan, (sources=st.sources, τ=st.τ))
+    @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
+    fc = FMM(SquareKernelIndependent(Laplace2D(); p=8), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
+    @test length(DevicePlan(fc).M2Lc[3]) == 7
+    # low-rank workspaces follow each level's ranks for a kernel built per width
+    pts3 = uniform_points3(rngr, 3000)
+    τ3 = randn(rngr, 3000)
+    fy = FMM(CubeKernelIndependent{3}(Yukawa3D(20.0); p=4), pts3; ppl=30, bbox=(P3(0, 0, 0), 1.0))
+    sty = build_expansions(fy, pts3, τ3)
+    plany = DevicePlan(fy; tol=1e-5)
+    outy = zeros(3000)
+    device_matvec!(outy, plany, (sources=sty.sources, τ=sty.τ))
+    @test mrd(outy, evaluate_at_sources(fy, sty)) < 1e-4
+    # complex densities with a real kernel: the plan's element type
+    τc = randn(rngr, ComplexF64, 3000)
+    fl = FMM(CubeKernelIndependent{3}(Laplace3D(); p=6), pts3; ppl=30, bbox=(P3(0, 0, 0), 1.0))
+    stc = build_expansions(fl, pts3, τc)
+    planc = DevicePlan(fl; eltype=ComplexF64)
+    @test eltype(planc.multipoles) == ComplexF64
+    outc = zeros(ComplexF64, 3000)
+    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ))
+    @test mrd(outc, evaluate_at_sources(fl, stc)) < 1e-10
+    @test_throws ArgumentError DevicePlan(fl; eltype=Float32)
+end

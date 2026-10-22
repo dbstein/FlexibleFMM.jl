@@ -12,9 +12,11 @@
 # precisions), device=cpu. The kernel, method and distribution specifications are
 # those of ../common.jl; the black-box method takes no stresslets. Each case runs
 # our method at every `method` and the library at every `eps` on the same points,
-# with 2000 separate targets. Ours is split as tree / matvec (expansions + self
-# evaluation) / targets, with the operators built once and cached as in a solver
-# loop; the library's single call builds its tree and evaluates at sources and
+# with 2000 separate targets. Ours is split as tree / first (the first application
+# of a fresh state, which creates the method's workspaces) / matvec (expansions +
+# self evaluation, the best of three warm repetitions) / targets, with the
+# operators built once and cached as in a solver loop; "total" is tree + matvec +
+# targets. The library's single call builds its tree and evaluates at sources and
 # targets. Errors are relative max errors at the targets against our direct sum,
 # which is exact for both codes. The libraries' kernel normalisations differ from
 # ours; each case first calibrates the constant factor on a small problem and
@@ -59,22 +61,24 @@ cvt(x::SVector) = SVector{dim,TP}(x)
 cvt(x::Stresslet) = Stresslet(cvt(x.f), cvt(x.ν))
 cvt(τ::AbstractVector) = TP === Float64 ? τ : map(cvt, τ)
 
-# ---- ours: tree / matvec / targets, best of two runs (the first compiles) ----
+# ---- ours: tree / first application / warm matvec / targets ----
+# The tree is built twice (the first builds the operators into the cache; the
+# second is timed), the first application of a fresh state is timed on its own (it
+# creates the method's workspaces, the cube method's spectral one in particular),
+# and the matvec is the best of three warm repetitions on that state.
 function run_ours(m, τ, ptsT, tgT; dev=to)
     local f, st, ut
-    t_tree = t_mv = t_tg = Inf
     cache = OperatorCache(m)            # operators are built once per kernel and order and reused
-    for _ in 1:2
-        t1 = @elapsed f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
-        t2 = @elapsed (st = build_expansions(f, ptsT, τ); evaluate_at_sources(f, st))
-        t3 = @elapsed ut = evaluate(f, st, tgT)
-        t_tree, t_mv, t_tg = min(t_tree, t1), min(t_mv, t2), min(t_tg, t3)
-    end
+    f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
+    t_tree = @elapsed f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
+    t_first = @elapsed (st = build_expansions(f, ptsT, τ); evaluate_at_sources(f, st))
+    t_mv = minimum(@elapsed((build_expansions!(st, f, ptsT, τ); evaluate_at_sources(f, st))) for _ in 1:3)
+    t_tg = minimum(@elapsed(ut = evaluate(f, st, tgT)) for _ in 1:3)
     if dev !== nothing                  # the device matvec and target evaluation (locations on the CPU excluded)
         plan = DevicePlan(f, dev)
         ds = (sources=dev(st.sources), τ=dev(st.τ))
         outd = dev(similar(evaluate_at_sources(f, st)))
-        device_matvec!(outd, plan, ds)
+        t_first = @elapsed device_matvec!(outd, plan, ds)
         t_mv = minimum(@elapsed(device_matvec!(outd, plan, ds)) for _ in 1:3)
         tgd = dev(tgT); nodes = dev(Int32.(locate(f.tree, tgT))); outt = dev(similar(ut))
         dsl = (locals=plan.locals, sources=ds.sources, τ=ds.τ)
@@ -82,7 +86,7 @@ function run_ours(m, τ, ptsT, tgT; dev=to)
         t_tg = minimum(@elapsed(evaluate!(outt, plan.dev, dsl, tgd, nodes)) for _ in 1:3)
         ut = Array(outt)
     end
-    return t_tree, t_mv, t_tg, ut, nlevels(f)
+    return t_tree, t_first, t_mv, t_tg, ut, nlevels(f)
 end
 # ---- library: one call evaluating at sources and targets, best of two ----
 function run_lib(call)
@@ -105,9 +109,10 @@ mat(v::AbstractVector{<:Number}) = reshape(v, 1, :)
 
 function report(name, rows)
     println("\n=== $name ===")
-    @printf "%-38s %10s %10s %10s %10s %9s\n" "code / parameter" "tree" "matvec" "targets" "total" "error"
+    @printf "%-38s %10s %10s %10s %10s %10s %9s\n" "code / parameter" "tree" "first" "matvec" "targets" "total" "error"
+    fmt(x) = x === nothing ? "" : @sprintf("%.3f", x)
     for r in rows
-        @printf "%-38s %10s %10s %10s %10.3f %9.1e\n" r[1] (r[2] === nothing ? "" : @sprintf("%.3f", r[2])) (r[3] === nothing ? "" : @sprintf("%.3f", r[3])) (r[4] === nothing ? "" : @sprintf("%.3f", r[4])) r[5] r[6]
+        @printf "%-38s %10s %10s %10s %10s %10.3f %9.1e\n" r[1] fmt(r[2]) fmt(r[3]) fmt(r[4]) fmt(r[5]) r[6] r[7]
     end
 end
 
@@ -153,11 +158,11 @@ for dname in dists
             mname, m = parse_method(mspec, KT, Val(dim))
             devm = m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod} ? dev : nothing   # the device passes
             r = run_ours(m, cvt(τ), ptsT, tgT; dev=devm)
-            push!(rows, ("ours $mname ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[2] + r[3], relerr(r[4], uex)))
+            push!(rows, ("ours $mname ($(r[6]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[4], r[1] + r[3] + r[4], relerr(r[5], uex)))
         end
         for e in epss
             t, out = run_lib(lib_call(kind, k, e, S, T, τ))
-            push!(rows, ("$(libname(kind)) eps=$e", nothing, nothing, nothing, t, relerr(out ./ c, uex)))
+            push!(rows, ("$(libname(kind)) eps=$e", nothing, nothing, nothing, nothing, t, relerr(out ./ c, uex)))
         end
         report("$dim" * "D $kname, N = $N $dname", rows)
     end

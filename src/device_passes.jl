@@ -72,7 +72,7 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     Gc::Dict{Int,M}; Yc::Dict{Int,M}                         # per chunk length: class gather and GEMM output
 end
 
-function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) where {D,T}
+function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method)) where {D,T}
     tree = f.tree
     m = f.method
     m isa AbstractKernelIndependent || m isa HarmonicMethod ||
@@ -82,7 +82,10 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
     nc = 1 << D
     Nm, pml, pll, Nl = multipole_length(m), partial_multipole_length(m), partial_local_length(m), local_length(m)
     R = floattype(K)
-    TO = operator_eltype(m)              # the operators' eltype, complex for a complex kernel
+    TO = eltype                          # the operators' and expansions' eltype: the kernel's, or complex for
+                                         # complex densities (the operators promote; no complex GEMM on Metal)
+    TO <: Number && promote_type(TO, operator_eltype(m)) == TO ||
+        throw(ArgumentError("eltype must hold the operators' element type " * string(operator_eltype(m))))
     pinv = m isa AbstractKernelIndependent      # the harmonic methods have no partial-to-expansion transforms
     nb = pinv ? 1 : _nblocks(m)                 # scalar expansions per box, translated as columns of one pair
     Ns = Nm ÷ nb                                # rows of the scalar operators and permutations
@@ -98,7 +101,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
     M2Lb = [typeof(to(zeros(TO, 1, 1)))[] for _ in 1:L]
     m2l_scale = ones(L)
     ranks = Int[]
-    if m isa CubeKernelIndependent
+    rankl = [Int[] for _ in 1:L]                # per level: the low-rank class ranks (empty: dense)
+    if m isa CubeKernelIndependent && covariant(K)
         e3 = f.ops[l3].extra
         build(e, w) = tol > 0 ? (r = class_factors(K, e.small, e.embed, w, e.p, tol); (r[1], r[2], r[3], r[4])) :
                                 (r = class_operators(K, e.small, e.embed, w, e.p); (r[1], r[2], Matrix{TO}[], Int[]))
@@ -107,12 +111,28 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         db = [to(Matrix{TO}(B)) for B in btc]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                _, ol, bl, _ = build(f.ops[l].extra, f.ops[l].width)
+                _, ol, bl, rl = build(f.ops[l].extra, f.ops[l].width)
                 M2Lc[l] = [to(Matrix{TO}(A)) for A in ol]
                 M2Lb[l] = [to(Matrix{TO}(B)) for B in bl]
+                rankl[l] = rl
             else
                 M2Lc[l] = dc
                 M2Lb[l] = db
+                rankl[l] = ranks
+                m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
+            end
+        end
+    elseif m isa CubeKernelIndependent          # no covariance: one dense operator per offset, per width
+        offs = far_offsets(Val(D))
+        nfo = length(offs)
+        sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
+        dense(l) = [to(Matrix{TO}(_cube_m2l_matrix(K, f.ops[l].extra, f.ops[l].width, o))) for o in offs]
+        dc = dense(l3)
+        for l in 1:L
+            if a === nothing && l >= 3 && l != l3
+                M2Lc[l] = dense(l)
+            else
+                M2Lc[l] = dc
                 m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
             end
         end
@@ -131,6 +151,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         for l in 1:L
             M2Lc[l] = dc
             M2Lb[l] = db
+            rankl[l] = ranks
             m2l_scale[l] = Float64(f.ops[l].m2l_scale)
         end
     else
@@ -189,6 +210,12 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
     l2l_dense(l) = nb == 4 ? dense_ops[l][2] : f.ops[l].L2L
     lens = unique([ch.len for l in 1:L for ch in chunks[l]])
     isempty(lens) && push!(lens, 64)
+    zranks = Dict{Tuple{Int,Int},Int}()             # per (class, chunk length): the rank over the levels
+    for l in 1:L, ch in chunks[l]
+        r = isempty(rankl[l]) ? 1 : rankl[l][ch.class]
+        key = (ch.class, ch.len)
+        zranks[key] = max(get(zranks, key, 0), r)
+    end
     # the pseudo-inverse factors (placeholders for the harmonic methods)
     pm(get) = pinv ? [to(Matrix{TO}(get(f.ops[l].extra))) for l in 1:L] : [mk(1, 1) for l in 1:L]
     pv(get) = pinv ? [to(Vector{R}(get(f.ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
@@ -204,7 +231,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false) whe
         pm(e -> e.P_down.Uh), pv(e -> e.P_down.invS), pm(e -> e.P_down.V),
         pinv ? [Float64(f.ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
         M2Lc, m2l_scale, M2Lb,
-        Dict((ch.class, ch.len) => mk(max(1, isempty(ranks) ? 1 : ranks[ch.class]), nb * ch.len) for l in 1:L for ch in chunks[l]),
+        Dict(key => mk(max(1, r), nb * key[2]) for (key, r) in zranks),
         to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, chunks, chunk,
         mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),
         [mk(pml, max(1, length(f.s2m_nodes[l]))) for l in 1:L],

@@ -251,7 +251,6 @@ end
     v = randn(rng, 49)
     for f in (1, 50, 200, 316)
         @test sort(sc.idx[f]) == 1:49 && sort(sc.idx_t[f]) == 1:49
-        @test permute_t(sc, f, permute(sc, f, v)) ≈ v || true            # (different sides: not an inverse pair)
         Ps = zeros(49, 49); Pt = zeros(49, 49)
         for i in 1:49
             Ps[sc.idx[f][i], i] = sc.sgn[f][i]; Pt[sc.idx_t[f][i], i] = sc.sgn_t[f][i]

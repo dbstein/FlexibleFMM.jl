@@ -34,7 +34,7 @@ end
 The analytic multipole method for the 3D Stokeslet: four solid-harmonic expansions
 of degree `p` (`4(p+1)²` coefficients), with the scalar translations dense or, for
 `tol > 0`, in truncated-SVD form as for `SphericalHarmonics`. Stokeslets, stresslets
-and doublets; velocity, velocity-gradient and pressure outputs.
+and doublets with real densities; velocity, velocity-gradient and pressure outputs.
 """
 function StokesHarmonics(kernel::Stokeslet3D{T,PreciseMath}; p::Integer=16, tol::Real=0) where {T}
     p >= 1 || throw(ArgumentError("p must be at least 1"))
@@ -51,9 +51,11 @@ near_kernel(m::StokesHarmonics) = m.kernel
 operator_eltype(::StokesHarmonics{K,T}) where {K,T} = T
 operators_type(::StokesHarmonics{K,T,S}) where {K,T,S} = LevelOperators{T,T,HarmonicExtras{T,S},HarmonicStokesM2L{T,PermutedM2L{S}}}
 supports_density(::StokesHarmonics, ::Type) = false
-supports_density(::StokesHarmonics, ::Type{<:SVector{3}}) = true
-supports_density(::StokesHarmonics, ::Type{<:Stresslet{3}}) = true
-supports_density(::StokesHarmonics, ::Type{<:Doublet{3}}) = true
+# real densities only: the evaluation bodies combine the real pairs of the storage
+# in complex arithmetic, which a complex density would conflate with its own parts
+supports_density(::StokesHarmonics, ::Type{SVector{3,T}}) where {T<:Real} = true
+supports_density(::StokesHarmonics, ::Type{Stresslet{3,T}}) where {T<:Real} = true
+supports_density(::StokesHarmonics, ::Type{Doublet{3,T}}) where {T<:Real} = true
 supports_density(m::StokesHarmonics, ::Type{T}) where {T<:Tuple} = all(S -> supports_density(m, S), fieldtypes(T))
 supports_output(::StokesHarmonics, out) = out isa Potential || out isa Gradient || out isa Pressure
 _scalar_method(m::StokesHarmonics{K,T}, p) where {K,T} = SphericalHarmonics(Laplace3D(T); p=p, tol=m.tol)

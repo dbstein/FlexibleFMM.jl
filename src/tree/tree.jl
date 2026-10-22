@@ -88,18 +88,21 @@ extent (or 1 if all points coincide).
 """
 function square_bbox(points::AbstractVector{SVector{D,T}}) where {D,T}
     isempty(points) && throw(ArgumentError("no points"))
+    all(p -> all(isfinite, p), points) || throw(ArgumentError("the points must be finite"))
     lo = reduce((a, b) -> min.(a, b), points)
     hi = reduce((a, b) -> max.(a, b), points)
     W0 = maximum(hi - lo)
+    isfinite(W0) || throw(ArgumentError("the points' extent overflows"))
     W0 > 0 || (W0 = one(T))
-    c = (lo + hi) / 2
+    c = lo + (hi - lo) / 2                        # the midpoint without overflowing lo + hi
     origin = c .- W0 / 2
     # rounding can leave an extreme point an ulp outside; widen until all are inside
-    while !(all(origin .<= lo) && all(origin .+ W0 .>= hi))
+    for _ in 1:64
+        all(origin .<= lo) && all(origin .+ W0 .>= hi) && return origin, W0
         W0 *= 1 + 4eps(T)
         origin = c .- W0 / 2
     end
-    return origin, W0
+    throw(ArgumentError("could not fit a box around the points"))
 end
 
 function Base.show(io::IO, t::Tree{D,T}) where {D,T}

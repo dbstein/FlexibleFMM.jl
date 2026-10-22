@@ -255,3 +255,9 @@ function harmonic_symmetry_classes(p::Int)
     end
     return SymmetryClasses{3}(reps, class, idxs, sgns, idxt, sgnt)
 end
+
+# the dense translation operator of one far offset of the cube method (multipole to
+# check data), for kernels without the covariance the classes need
+function _cube_m2l_matrix(K, e, w::R, o::SVector{D,Int}) where {D,R}
+    return _multipole_to_check_matrix(K, e.small .+ Ref(SVector{D,R}(o) * w), SVector{D,R}(o) * w, w, e.small, zero(SVector{D,R}))
+end

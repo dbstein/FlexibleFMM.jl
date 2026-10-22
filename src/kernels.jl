@@ -11,7 +11,7 @@ abstract type AbstractKernel end
 The floating-point precision a kernel's constants are stored in, and hence the
 precision of the operators built from it. `Float64` unless a kernel says otherwise.
 """
-floattype(::AbstractKernel) = Float64
+floattype(K) = Float64                               # any callable `K(source, target)`
 
 @inline _sqnorm(d::SVector) = sum(abs2, d)
 
@@ -316,6 +316,33 @@ or Bessel functions; `Laplace3D` and `Stokeslet3D` have degree -1).
 homogeneity(K) = nothing
 
 """
+    covariant(K)
+
+Whether the kernel is covariant under the signed permutations of the axes
+(`K(Rs, Rt) = R·K(s, t)·Rᵀ`, which for a scalar kernel means invariance), the
+property the symmetry classes of the far offsets rest on. True for the radial
+kernels and the Stokeslets, false by default: a merely translation-invariant kernel
+such as `LaplaceDipoleTest` takes one translation operator per offset on the device.
+"""
+covariant(K) = false
+covariant(::AbstractRadialKernel) = true
+covariant(::Laplace2D) = true
+covariant(::Laplace3D) = true
+covariant(::Stokeslet2D) = true
+covariant(::Stokeslet3D) = true
+
+"""
+    masks_self(K)
+
+Whether the direct sums may evaluate the kernel at coincident points and discard
+the value (the branch-free masked self term), which needs the evaluation to return
+rather than throw. True for the built-in kernels; a callable kernel that guards
+against `r = 0` takes the skipping loop instead.
+"""
+masks_self(K) = false
+masks_self(::AbstractKernel) = true
+
+"""
     symmetric_kernel(K)
 
 Whether a matrix-valued kernel has `K(s, t)[a, b] == K(s, t)[b, a]` (the Stokeslet),
@@ -362,11 +389,20 @@ function _kernel_matrix(::Type{S}, K, sources, targets) where {m,n,S<:SMatrix{m,
     return A
 end
 
-# Accumulates Σ_{i ≠ skip} target_field(K, sources[i], t, τ[i], out) onto `acc`.
+# Accumulates Σ_{i ≠ skip} target_field(K, sources[i], t, τ[i], out) onto `acc`: the
+# excluded term masked (branch-free) when the kernel tolerates coincident points,
+# skipped otherwise.
 @inline function _direct_target(K, sources, τ, t, skip::Int, acc, out)
-    @inbounds @simd for i in eachindex(sources)
-        v = target_field(K, sources[i], t, τ[i], out)
-        acc += ifelse(i == skip, zero(v), v)      # masked, not skipped: the body stays branch-free
+    if masks_self(K)
+        @inbounds @simd for i in eachindex(sources)
+            v = target_field(K, sources[i], t, τ[i], out)
+            acc += ifelse(i == skip, zero(v), v)
+        end
+    else
+        @inbounds for i in eachindex(sources)
+            i == skip && continue
+            acc += target_field(K, sources[i], t, τ[i], out)
+        end
     end
     return acc
 end

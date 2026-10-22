@@ -54,7 +54,9 @@ velocity, pressure and velocity-gradient outputs, and a plan API in the shape of
 JellySim's kernel backends (`StokesFMMPlan`, `stokes_fmm_eval!`, `StokesFMMKernel`);
 see `docs/stokes.md`.
 
-Kernels are callables `K(source, target)` on `SVector`s; `Laplace2D()`,
+Kernels are callables `K(source, target)` on `SVector`s (a plain function works;
+it takes the skipping self sum unless it declares `masks_self`, and the device
+classes unless it declares `covariant`); `Laplace2D()`,
 `Helmholtz2D(k)`, `Yukawa2D(k)` and their 3D versions `Laplace3D()`, `Helmholtz3D(k)`,
 `Yukawa3D(k)` (`1/4πr` normalisation) are provided and any translation-invariant
 function of the same shape works. In 3D use `CubeKernelIndependent{3}(K; p=8)` with
@@ -93,8 +95,9 @@ at `k·w ≈ 3.40, 5.42, …`) and for timings against FMM2D/FMM3D (2D: 1.5–2�
 than FMM2D; 3D: level with FMM3D for Laplace and Helmholtz, 25% behind for Stokes). The
 black-box method converges geometrically in `p`. In
 3D the cube method at `p = 8` has a worst-case translation error of `1e-6` for
-Laplace (global errors about `1e-7`) and `3e-6`, `4e-5`, `1e-3` for stokeslets,
-stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`). The
+Laplace (global errors about `1e-7`) and `3e-6`, `1e-3`, `1e-3` for stokeslets,
+stresslets and doublets on the corner configuration (sampled random boxes give
+`4e-5` for stresslets); `p = 10` gains a further 30× (`docs/kifmm.md`). The
 analytic method reaches `3e-6`, `3e-7`, `2e-8` global error at `p = 12, 16, 20` on
 uniform data, with a worst case (corner source facing a corner target) converging
 only as `0.7^p`; on fibre geometries the harmonic methods are 4–5× faster than the

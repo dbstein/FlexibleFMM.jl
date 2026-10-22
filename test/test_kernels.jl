@@ -90,3 +90,20 @@ end
         @test @allocated(K(s, t)) == 0
     end
 end
+
+@testset "review: callable kernels, and kernels that reject coincident points" begin
+    using FlexibleFMM: floattype, masks_self
+    plain(s, t) = 1 / norm(t - s)
+    @test floattype(plain) == Float64 && !masks_self(plain) && masks_self(Laplace2D())
+    guarded(s, t) = (r = norm(t - s); r == 0 && error("coincident"); -log(r) / 2π)
+    rngk = MersenneTwister(5)
+    pts = [rand(rngk, SVector{2,Float64}) for _ in 1:300]
+    τ = randn(rngk, 300)
+    @test direct_self(guarded, pts, τ) ≈ direct_self(Laplace2D(), pts, τ)
+    @test direct_self(guarded, pts[1:1], τ[1:1]) == [0.0]
+    f = FMM(KernelIndependent(guarded; nequiv=30), pts; ppl=20, bbox=(SVector(0.0, 0.0), 1.0))
+    st = build_expansions(f, pts, τ)
+    @test mrd(evaluate_at_sources(f, st), direct_self(Laplace2D(), pts, τ)) < 1e-6
+    fb = FMM(BlackBox(plain; p=6), pts; ppl=20, bbox=(SVector(0.0, 0.0), 1.0))
+    @test fb isa FMM
+end
