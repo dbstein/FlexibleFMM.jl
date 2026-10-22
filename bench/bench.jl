@@ -24,6 +24,10 @@
 # the same device passes through KernelAbstractions' CPU backend (Float64, Julia
 # threads, no package needed): the device code path without a device.
 #
+# tree=device builds the tree on the device as well (`DevicePlan(m, xs; …)`): the
+# tree column is then the device build (part of the plan), nothing of the tree on
+# the host.
+#
 # fast=true switches the kernel to the FastMath policy (`fastmath(K)`: the kernel
 # bodies under relaxed arithmetic, docs/framework.md), which every phase the kernel
 # enters then uses; the direct reference stays precise.
@@ -75,7 +79,7 @@ cvt(::Type{T}, x::Stresslet) where {T} = Stresslet(cvt(T, x.f), cvt(T, x.ν))
 cvt(::Type{T}, x::Doublet) where {T} = Doublet(cvt(T, x.g))
 cvt(::Type{T}, x::Tuple) where {T} = map(y -> cvt(T, y), x)
 
-function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts64=nothing, τ64=nothing, cores=1)
+function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts64=nothing, τ64=nothing, cores=1, devtree=false)
     N = length(pts)
     T = eltype(eltype(pts))
     nw = min(N, max(4000, 100 * ppl))        # enough points for a tree with far-field interactions, so the
@@ -85,12 +89,16 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
     sw = build_expansions(fw, pts[1:nw], τ[1:nw])
     usw = evaluate_at_sources(fw, sw)
     if to !== nothing
-        pw = DevicePlan(fw, to)
+        pw = devtree ? DevicePlan(m, to(pts[1:nw]); ppl=ppl, bbox=box, cache=fw.cache) : DevicePlan(fw, to)
         device_matvec!(to(similar(usw)), pw, (sources=to(pts[1:nw]), τ=to(τ[1:nw])))
     end
     cache = fw.cache
-    t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
-    perm = f.tree.perm
+    if devtree                      # the tree on the device, inside the plan build
+        t_tree = 0.0
+        f = fw
+    else
+        t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
+    end
     if to === nothing
         st = FMMState(f, expansion_eltype(m, T, eltype(τ)), T, eltype(τ))
         st.sources .= pts[perm]; st.τ .= τ[perm]
@@ -109,7 +117,11 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         ds = (sources=to(pts), τ=to(τ))
         outd = to(similar(τ, eltype(usw)))
         local plan
-        rp = @timed plan = DevicePlan(f, to; verbose=true)
+        # a device tree is built once untimed at this size first: Metal's sortperm!
+        # (MPSGraph) compiles per array size, a one-time cost per N, and the timed
+        # build is then the steady state of a time-stepping loop
+        devtree && DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
+        rp = @timed plan = devtree ? DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache, verbose=true) : DevicePlan(f, to; verbose=true)
         rf = @timed device_matvec!(outd, plan, ds)
         t_plan, t_first = rp.time, rf.time
         @printf "    plan: compile %.3f s, gc %.3f s; first matvec: compile %.3f s, gc %.3f s\n" rp.compile_time rp.gctime rf.compile_time rf.gctime
@@ -121,12 +133,12 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
             out = Array(outd)[sub]
             err = maximum(norm.(out .- uex)) / maximum(norm.(uex))
         end
-        @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | plan %7.1f | first %7.1f | matvec %7.1f ms (%6.0f kpts/s) | with tree %7.1f ms | vs direct %.1e\n" label ppl N nlevels(f) 1e3t_tree 1e3t_plan 1e3t_first 1e3t_mv N / t_mv / 1000 1e3(t_tree + t_mv) err
+        @printf "%-36s ppl=%-4d N=%-8d %2d lev | tree %7.1f | plan %7.1f | first %7.1f | matvec %7.1f ms (%6.0f kpts/s) | with tree %7.1f ms | vs direct %.1e\n" label ppl N plan.nlevels 1e3t_tree 1e3t_plan 1e3t_first 1e3t_mv N / t_mv / 1000 1e3(t_tree + t_mv) err
     end
     return nothing
 end
 
-function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast)
+function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast, devtree)
     rng = MersenneTwister(1)
     println(config_line())
     println("cores assumed for the rates: ", cores, ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
@@ -143,7 +155,7 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores,
             m === nothing && continue                            # a method not for this kernel
             τ64 = density(rng, kernel_kind(kspec), K64, N, Val(dim))
             τ = T === Float64 ? τ64 : map(x -> cvt(T, x), τ64)
-            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64, cores=cores)
+            run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64, cores=cores, devtree=devtree)
         end
     end
 end
@@ -172,4 +184,6 @@ T = precision == "float32" ? Float32 : Float64
 nerr = parse(Int, get(args, "nerr", "500"))
 cores = parse(Int, get(args, "cores", string(max(1, Sys.CPU_THREADS ÷ 2))))
 fast = get(args, "fast", "false") == "true"
-main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast)
+devtree = get(args, "tree", "host") == "device"
+devtree && to === nothing && error("tree=device needs a device")
+main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores, fast, devtree)

@@ -256,11 +256,14 @@ and `target_field` methods for the outputs it should support.
   of the package (block totals, a recursive scan of them, the blocks scanned with
   their offsets): Metal's `accumulate!` and `sum(…; dims)` go through MPSGraph,
   which compiles a graph per array size, 0.2–1.2 s of every plan build since every
-  tree has new level sizes. `DevicePlan(…; verbose=true)` reports the build's
-  stages. On the M3 Max (Metal, Float32, sphere points, Stokes cube `p = 4`, 800 per
-  leaf) the plan builds in 0.07 s at 10⁶ points and 0.22 s at 10⁷ (lists 0.02 and
-  0.05 s), against 1.3 and 1.8 s with the lists on the host, and the tree in 0.06 and
-  0.32 s on 12 threads; the matvec takes 0.11 and 0.91 s. `device_build_expansions!` runs
+  tree has new level sizes. `DevicePlan(…; verbose=true)` reports the build's stages. On the M3 Max (Metal,
+  Float32, sphere points, Stokes cube `p = 4`, 800 per leaf) the plan builds in
+  0.07 s at 10⁶ points and 0.22 s at 10⁷ (lists 0.02 and 0.05 s), against 1.3 and
+  1.8 s with the lists on the host, and the tree in 0.06 and 0.32 s on 12 threads;
+  the matvec takes 0.11 and 0.91 s. With the tree built on the device as well
+  (`DevicePlan(method, xs; ppl, bbox, cache)` from points on the device,
+  `docs/tree.md`), the plan is 0.14 and 0.31 s all in, nothing of the tree on the
+  host; the bench's `tree=device` option runs that path. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);

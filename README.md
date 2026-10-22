@@ -86,8 +86,10 @@ on the Icelake node, where regions are cheap, that configuration is 1.5× slower
 
 The whole matvec runs on GPUs through KernelAbstractions: `DevicePlan(f, MtlArray)`
 (or `CuArray`) moves the operators once and builds the interaction lists on the
-device, `device_matvec!` takes sources and densities in their original order and
-runs the expansion passes (dense translations by the symmetry classes of the far offsets)
+device, and `DevicePlan(m, xs; ppl, bbox)` with the points already on the device
+builds the tree there too (`device_tree`, the same structure as the host tree);
+`device_matvec!` takes sources and densities in their original order and runs the
+expansion passes (dense translations by the symmetry classes of the far offsets)
 and the self evaluation on the device, and the device methods of `evaluate!` and
 `evaluate_at_sources!` take device arrays; backends are not dependencies. The
 kernel-independent and the harmonic methods run there. On an M3 Max in Float32,

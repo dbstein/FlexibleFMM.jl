@@ -45,35 +45,26 @@ end
 Adapt.@adapt_structure DeviceSurface
 Adapt.@adapt_structure DeviceHarmonic
 
-function _device_far(f::FMM{D}, ::AbstractKernelIndependent, to) where {D}
-    L = nlevels(f.tree)
-    ys = f.ops[1].extra.ysoa
+function _device_far(ops::Vector, ::AbstractKernelIndependent, L::Int, to, ::Val{D}) where {D}
+    ys = ops[1].extra.ysoa
     ysoa = Array{eltype(ys),3}(undef, size(ys, 1), D, L)
     for l in 1:L
-        ysoa[:, :, l] = f.ops[l].extra.ysoa
+        ysoa[:, :, l] = ops[l].extra.ysoa
     end
     return DeviceSurface(to(ysoa))
 end
-function _device_far(f::FMM, m::HarmonicMethod, to)
-    L = nlevels(f.tree)
-    tb = f.ops[1].extra.tb
-    return DeviceHarmonic(m.p, _nblocks(m), to([f.ops[l].extra.scale for l in 1:L]),
+function _device_far(ops::Vector, m::HarmonicMethod, L::Int, to, ::Val{D}) where {D}
+    tb = ops[1].extra.tb
+    return DeviceHarmonic(m.p, _nblocks(m), to([ops[l].extra.scale for l in 1:L]),
                           HarmonicTables(tb.p, to(tb.a), to(tb.b), to(tb.e), to(tb.cz), to(tb.cm), to(tb.cp)))
 end
-_device_far(f::FMM, m, to) = throw(ArgumentError("the device evaluation is written for the kernel-independent and harmonic methods"))
-_device_far(f::FMM, m::SphericalHarmonics{<:Yukawa3D}, to) = throw(ArgumentError("the Yukawa harmonic method is not on the device yet"))
+_device_far(ops::Vector, m, L::Int, to, ::Val) = throw(ArgumentError("the device evaluation is written for the kernel-independent and harmonic methods"))
+_device_far(ops::Vector, m::SphericalHarmonics{<:Yukawa3D}, L::Int, to, ::Val) = throw(ArgumentError("the Yukawa harmonic method is not on the device yet"))
 
-function DeviceEvaluator(f::FMM{D}, to=identity; fast::Bool=false) where {D}
-    tree = f.tree
-    n = nnodes(tree)
-    far = _device_far(f, f.method, to)
-    K = fast ? fastmath(near_kernel(f.method)) : near_kernel(f.method)
-    return DeviceEvaluator{D,typeof(K),typeof(to(Int32.(tree.colleagues))),typeof(to(Int32[])),
-                           typeof(to(SVector{D,eltype(tree.origin)}[])),typeof(far)}(
-        K, to(Int32.(tree.colleagues)),
-        to(Int32[first(r) for r in tree.points]), to(Int32[last(r) for r in tree.points]),
-        to(Int32.(tree.level)), to([center(tree, i) for i in 1:n]), far,
-        to(Int32.(tree.point_node)), to(Int32.(tree.perm)))
+# the centers of the nodes from their cells and levels, on the device
+@kernel function _centers!(centers, @Const(cell), @Const(level), origin, W0)
+    i = @index(Global, Linear)
+    @inbounds centers[i] = _center(origin, SVector{length(origin),Int}(cell[i]), W0 * typeof(W0)(0.5)^(Int(level[i]) - 1))
 end
 
 """

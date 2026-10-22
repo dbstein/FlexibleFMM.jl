@@ -13,24 +13,6 @@
 # plan build of 10⁷ points on the M3 Max.)
 
 """
-    DeviceTree(tree, to)
-
-The flat arrays of a tree that the device list build reads, moved once with `to`:
-cells (`SVector{D,Int32}`), parents, first children, and the ghost and has-source
-flags (`UInt8`).
-"""
-struct DeviceTree{VC,VI,VB}
-    cell::VC
-    parent::VI
-    child_first::VI
-    ghost::VB
-    has_source::VB
-end
-DeviceTree(tree::Tree{D}, to) where {D} =
-    DeviceTree(to(SVector{D,Int32}.(tree.cell)), to(Int32.(tree.parent)), to(Int32.(tree.child_first)),
-               to(UInt8.(tree.ghost)), to(UInt8.(tree.has_source)))
-
-"""
     DeviceLevelLists{VI}
 
 A level's class lists on the device: `src[q]`, `f[q]` (global source node, far
@@ -234,7 +216,7 @@ _setindex_device!(v, i::Int, x::Int) = (_set_entry!(get_backend(v), 1)(v, Int32(
 
 The class lists and chunk descriptors of the level whose nodes are `lo:lo+nl-1`.
 """
-function _device_level_lists(dt::DeviceTree, col, lo::Int, nl::Int, far_index, class, nclass::Int, chunk::Int,
+function _device_level_lists(dt, col, lo::Int, nl::Int, far_index, class, nclass::Int, chunk::Int,
                              ::Val{D}) where {D}
     backend = get_backend(dt.parent)
     cnt = similar(dt.parent, nl)

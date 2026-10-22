@@ -53,10 +53,14 @@ containment of the points may need; if that leaves the upper edge short, the wid
 is doubled.
 """
 function fit_box!(c::OperatorCache, points::AbstractVector{SVector{D,T}}, bbox) where {D,T}
-    origin, W = bbox === nothing ? square_bbox(points) : (SVector{D,T}(bbox[1]), T(bbox[2]))
-    W > 0 || throw(ArgumentError("box width must be positive"))
     lo = reduce((a, b) -> min.(a, b), points)
     hi = reduce((a, b) -> max.(a, b), points)
+    return fit_box!(c, lo, hi, bbox === nothing ? square_bbox(points) : bbox)
+end
+# from the points' bounds (`lo`, `hi`) and the requested box
+function fit_box!(c::OperatorCache, lo::SVector{D,T}, hi::SVector{D,T}, bbox) where {D,T}
+    origin, W = SVector{D,T}(bbox[1]), T(bbox[2])
+    W > 0 || throw(ArgumentError("box width must be positive"))
     all(origin .<= lo) && all(origin .+ W .>= hi) || throw(ArgumentError("points lie outside the requested box"))
     if !has_base_width(c)
         c.W0 = Float64(W)

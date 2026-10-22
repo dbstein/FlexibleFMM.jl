@@ -63,15 +63,73 @@ struct DevicePlan{D,E,M,V,VI,MI,MB,VO}
     scratch::Dict{Any,Any}                                   # the inputs gathered into the tree's order, per type
 end
 
+"""
+    DeviceEvaluator(fmm, to=identity; fast=false)
+    DeviceEvaluator(dt::DeviceTree, method, ops, to; fast=false)
+
+The evaluation data from a host FMM (uploaded) or from a device tree and the
+levels' operators.
+"""
+function DeviceEvaluator(dt::DeviceTree{D,T}, m, ops::Vector, to; fast::Bool=false) where {D,T}
+    n = nnodes(dt)
+    far = _device_far(ops, m, nlevels(dt), to, Val(D))
+    K = fast ? fastmath(near_kernel(m)) : near_kernel(m)
+    centers = similar(dt.sources, SVector{D,T}, n)
+    _centers!(get_backend(dt.level), 256)(centers, dt.cell, dt.level, dt.origin, dt.W0; ndrange=n)
+    return DeviceEvaluator{D,typeof(K),typeof(dt.colleagues),typeof(dt.level),typeof(centers),typeof(far)}(
+        K, dt.colleagues, dt.plo, dt.phi, dt.level, centers, far, dt.point_node, dt.perm)
+end
+DeviceEvaluator(f::FMM, to=identity; fast::Bool=false) = DeviceEvaluator(DeviceTree(f.tree, to), f.method, f.ops, to; fast=fast)
+
+# the array mover of the points' array type (`CuArray`, `MtlArray`; `identity` for `Array`s)
+_mover(::Array) = identity
+_mover(xs::AbstractArray) = typeof(xs).name.wrapper
+
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
                     verbose::Bool=false) where {D,T}
+    dt = DeviceTree(f.tree, to)
+    return _device_plan(dt, f.method, f.ops, [to(Int32.(f.s2m_nodes[l])) for l in 1:nlevels(dt)],
+                        [to(Int32.(f.leaf_nodes[l])) for l in 1:nlevels(dt)], to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)
+end
+
+"""
+    DevicePlan(method, xs; ppl=50, bbox, cache=OperatorCache(method), max_levels=30, tol=0, fast=false, eltype, verbose=false)
+
+The plan from points on the device (`xs` a `CuArray`/`MtlArray` of `SVector`s;
+`Array`s run on KernelAbstractions' CPU backend): the tree built there
+(`device_tree`), the operators of its levels from `cache` (the root box `bbox =
+(origin, width)` snapped to a width the cache knows), the node lists by compaction,
+the lists and the chunks as in the plan of a host FMM. Nothing of the tree touches
+the host but the level counts.
+"""
+function DevicePlan(m::AbstractMethod, xs::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox, cache::OperatorCache=OperatorCache(m),
+                    max_levels::Integer=30, tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
+    cache.method === m || throw(ArgumentError("the cache was built for a different method"))
+    D == dimension(m) || throw(ArgumentError("$(D)-dimensional points with a $(dimension(m))-dimensional method"))
+    to = _mover(xs)
+    t_tree = @elapsed begin
+        lo = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], min, xs), Val(D)))
+        hi = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], max, xs), Val(D)))
+        origin, W0, e0 = fit_box!(cache, lo, hi, bbox)
+        dt = device_tree(xs; ppl=ppl, bbox=(origin, W0), max_levels=max_levels)
+        L = nlevels(dt)
+        ops = [get_operators!(cache, e0 + 1 - l) for l in 1:L]
+        s2m_flag = map((c, h) -> Int32(c == 0 && h != 0), dt.child_first, dt.has_source)
+        leaf_flag = map(x -> Int32(x), dt.leaf)
+        s2m_nodes = [_compact(s2m_flag[r])[1] .+ Int32(first(r) - 1) for r in dt.level_range]
+        leaf_nodes = [_compact(leaf_flag[r])[1] .+ Int32(first(r) - 1) for r in dt.level_range]
+    end
+    verbose && println("DevicePlan: tree ", round(t_tree, digits=3), " s (", L, " levels, ", nnodes(dt), " nodes)")
+    return _device_plan(dt, m, ops, s2m_nodes, leaf_nodes, to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)
+end
+
+function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, leaf_nodes::Vector, to;
+                      tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
     t_start = time()
-    tree = f.tree
-    m = f.method
     m isa AbstractKernelIndependent || m isa HarmonicMethod ||
         throw(ArgumentError("the device passes are written for the kernel-independent and harmonic methods"))
     K = m.kernel
-    L = nlevels(tree)
+    L = nlevels(dt)
     nc = 1 << D
     Nm, pml, pll, Nl = multipole_length(m), partial_multipole_length(m), partial_local_length(m), local_length(m)
     R = floattype(K)
@@ -82,9 +140,9 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     pinv = m isa AbstractKernelIndependent      # the harmonic methods have no partial-to-expansion transforms
     nb = pinv ? 1 : _nblocks(m)                 # scalar expansions per box, translated as columns of one pair
     Ns = Nm ÷ nb                                # rows of the scalar operators and permutations
-    t_dev = @elapsed dev = DeviceEvaluator(f, to; fast=fast)
-    lo = [first(tree.level_range[l]) for l in 1:L]
-    nl = [length(tree.level_range[l]) for l in 1:L]
+    t_dev = @elapsed dev = DeviceEvaluator(dt, m, ops, to; fast=fast)
+    lo = [first(dt.level_range[l]) for l in 1:L]
+    nl = [length(dt.level_range[l]) for l in 1:L]
     # the dense translation operators: one per symmetry class for the cube method
     # (built at the width of level 3 for a homogeneous kernel and scaled, else per
     # level), one per far offset for circles, which have no cube lattice
@@ -97,15 +155,15 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     ranks = Int[]
     rankl = [Int[] for _ in 1:L]                # per level: the low-rank class ranks (empty: dense)
     if m isa CubeKernelIndependent && covariant(K)
-        e3 = f.ops[l3].extra
+        e3 = ops[l3].extra
         build(e, w) = tol > 0 ? (r = class_factors(K, e.small, e.embed, w, e.p, tol); (r[1], r[2], r[3], r[4])) :
                                 (r = class_operators(K, e.small, e.embed, w, e.p); (r[1], r[2], Matrix{TO}[], Int[]))
-        sc, opsc, btc, ranks = build(e3, f.ops[l3].width)
+        sc, opsc, btc, ranks = build(e3, ops[l3].width)
         dc = [to(Matrix{TO}(A)) for A in opsc]
         db = [to(Matrix{TO}(B)) for B in btc]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                _, ol, bl, rl = build(f.ops[l].extra, f.ops[l].width)
+                _, ol, bl, rl = build(ops[l].extra, ops[l].width)
                 M2Lc[l] = [to(Matrix{TO}(A)) for A in ol]
                 M2Lb[l] = [to(Matrix{TO}(B)) for B in bl]
                 rankl[l] = rl
@@ -113,25 +171,25 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
                 M2Lc[l] = dc
                 M2Lb[l] = db
                 rankl[l] = ranks
-                m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
+                m2l_scale[l] = a === nothing ? 1.0 : (ops[l].width / ops[l3].width)^a
             end
         end
     elseif m isa CubeKernelIndependent          # no covariance: one dense operator per offset, per width
         offs = far_offsets(Val(D))
         nfo = length(offs)
         sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
-        dense(l) = [to(Matrix{TO}(_cube_m2l_matrix(K, f.ops[l].extra, f.ops[l].width, o))) for o in offs]
+        dense(l) = [to(Matrix{TO}(_cube_m2l_matrix(K, ops[l].extra, ops[l].width, o))) for o in offs]
         dc = dense(l3)
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
                 M2Lc[l] = dense(l)
             else
                 M2Lc[l] = dc
-                m2l_scale[l] = a === nothing ? 1.0 : (f.ops[l].width / f.ops[l3].width)^a
+                m2l_scale[l] = a === nothing ? 1.0 : (ops[l].width / ops[l3].width)^a
             end
         end
     elseif m isa HarmonicMethod                 # the 34 class representatives, shared by all levels (homogeneous)
-        e3 = f.ops[l3].extra
+        e3 = ops[l3].extra
         sc = e3.sc
         reps = e3.reps
         if reps[1] isa LowRankM2L
@@ -146,19 +204,19 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
             M2Lc[l] = dc
             M2Lb[l] = db
             rankl[l] = ranks
-            m2l_scale[l] = Float64(f.ops[l].m2l_scale)
+            m2l_scale[l] = Float64(ops[l].m2l_scale)
         end
     else
         offs = far_offsets(Val(D))
         nfo = length(offs)
         sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
-        dc = [to(Matrix{TO}(f.ops[l3].M2L[fi].A)) for fi in 1:nfo]
+        dc = [to(Matrix{TO}(ops[l3].M2L[fi].A)) for fi in 1:nfo]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                M2Lc[l] = [to(Matrix{TO}(f.ops[l].M2L[fi].A)) for fi in 1:nfo]
+                M2Lc[l] = [to(Matrix{TO}(ops[l].M2L[fi].A)) for fi in 1:nfo]
             else
                 M2Lc[l] = dc                                     # shared reference matrices
-                m2l_scale[l] = Float64(f.ops[l].m2l_scale)
+                m2l_scale[l] = Float64(ops[l].m2l_scale)
             end
         end
     end
@@ -176,8 +234,7 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     chunk = 4096
     VI = typeof(to(Int32[]))
     t_lists = @elapsed begin
-        dt = DeviceTree(tree, to)
-        far_index_d = to(Int32.(tree.far_index))
+        far_index_d = to(Int32.(far_index_table(Val(D))))
         class_d = to(Int32.(sc.class))
         lists = Vector{DeviceLevelLists{VI}}(undef, L)
         chunks = Vector{Vector{ClassChunk}}(undef, L)
@@ -194,9 +251,9 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
     mk(r, c) = fill!(similar(proto, r, c), zero(TO))      # zeroed on the device: no host zeros to page in and upload
     # the Stokes harmonic M2M and L2L in their dense form: one large GEMM per level
     # beats the eight child blocks with their kernels on a device
-    dense_ops = nb == 4 ? Dict(l => _stokes_dense_operators(f.ops[l], Ns) for l in 1:L) : Dict{Int,Tuple{Matrix{TO},Matrix{TO}}}()
-    m2m_dense(l) = nb == 4 ? dense_ops[l][1] : f.ops[l].M2M
-    l2l_dense(l) = nb == 4 ? dense_ops[l][2] : f.ops[l].L2L
+    dense_ops = nb == 4 ? Dict(l => _stokes_dense_operators(ops[l], Ns) for l in 1:L) : Dict{Int,Tuple{Matrix{TO},Matrix{TO}}}()
+    m2m_dense(l) = nb == 4 ? dense_ops[l][1] : ops[l].M2M
+    l2l_dense(l) = nb == 4 ? dense_ops[l][2] : ops[l].L2L
     lens = unique([ch.len for l in 1:L for ch in chunks[l]])
     isempty(lens) && push!(lens, 64)
     zranks = Dict{Tuple{Int,Int},Int}()             # per (class, chunk length): the rank over the levels
@@ -206,28 +263,26 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
         zranks[key] = max(get(zranks, key, 0), r)
     end
     # the pseudo-inverse factors (placeholders for the harmonic methods)
-    pm(get) = pinv ? [to(Matrix{TO}(get(f.ops[l].extra))) for l in 1:L] : [mk(1, 1) for l in 1:L]
-    pv(get) = pinv ? [to(Vector{R}(get(f.ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
-    rup(l) = pinv ? rank(f.ops[l].extra.P_up) : 1
-    rdn(l) = pinv ? rank(f.ops[l].extra.P_down) : 1
-    nq(l) = max(1, length(f.leaf_nodes[l]))
+    pm(get) = pinv ? [to(Matrix{TO}(get(ops[l].extra))) for l in 1:L] : [mk(1, 1) for l in 1:L]
+    pv(get) = pinv ? [to(Vector{R}(get(ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
+    rup(l) = pinv ? rank(ops[l].extra.P_up) : 1
+    rdn(l) = pinv ? rank(ops[l].extra.P_down) : 1
+    nq(l) = max(1, length(leaf_nodes[l]))
     plan = DevicePlan{D,typeof(dev),typeof(to(zeros(TO, 1, 1))),typeof(to(zeros(R, 1))),VI,typeof(to(idx)),typeof(to(sgn)),typeof(offs)}(
         dev, L, lo, nl, Nm, pml, pll, Nl,
-        [to(Int32.(f.s2m_nodes[l])) for l in 1:L],
-        [to(Int32.(f.leaf_nodes[l])) for l in 1:L], [to(Int32.(f.leaf_nodes[l] .- (lo[l] - 1))) for l in 1:L],
-        [to(Int32.(tree.group_parent[l])) for l in 1:L],
-        [to(Matrix{TO}(m2m_dense(l))) for l in 1:L], [Float64(f.ops[l].m2m_scale) for l in 1:L],
-        [to(Matrix{TO}(l2l_dense(l))) for l in 1:L], [Float64(f.ops[l].l2l_scale) for l in 1:L],
+        s2m_nodes, leaf_nodes, [leaf_nodes[l] .- Int32(lo[l] - 1) for l in 1:L], dt.group_parent,
+        [to(Matrix{TO}(m2m_dense(l))) for l in 1:L], [Float64(ops[l].m2m_scale) for l in 1:L],
+        [to(Matrix{TO}(l2l_dense(l))) for l in 1:L], [Float64(ops[l].l2l_scale) for l in 1:L],
         pm(e -> e.P_up.Uh), pv(e -> e.P_up.invS), pm(e -> e.P_up.V),
         pm(e -> e.P_down.Uh), pv(e -> e.P_down.invS), pm(e -> e.P_down.V),
-        pinv ? [Float64(f.ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
+        pinv ? [Float64(ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
         M2Lc, m2l_scale, M2Lb,
         Dict(key => mk(max(1, r), nb * key[2]) for (key, r) in zranks),
         to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, lists, chunks, chunk,
-        mk(Nm, nnodes(tree)), mk(pll, nnodes(tree)), mk(Nl, nnodes(tree)),
-        [mk(pml, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
-        [mk(rup(l), max(1, length(f.s2m_nodes[l]))) for l in 1:L],
-        [mk(Nm, max(1, length(f.s2m_nodes[l]))) for l in 1:L],
+        mk(Nm, nnodes(dt)), mk(pll, nnodes(dt)), mk(Nl, nnodes(dt)),
+        [mk(pml, max(1, length(s2m_nodes[l]))) for l in 1:L],
+        [mk(rup(l), max(1, length(s2m_nodes[l]))) for l in 1:L],
+        [mk(Nm, max(1, length(s2m_nodes[l]))) for l in 1:L],
         [mk(nc * Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L], [mk(Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L],
         [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
         [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],

@@ -84,6 +84,9 @@ include("operator_checks.jl")
     @testset "device passes" begin
         include("test_device_passes.jl")
     end
+    @testset "device tree" begin
+        include("test_device_tree.jl")
+    end
     @testset "device passes, harmonic methods" begin
         include("test_device_harmonics.jl")
     end

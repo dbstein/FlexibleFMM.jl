@@ -31,6 +31,7 @@ include("evaluate.jl")
 include("stokes_api.jl")
 include("device.jl")
 include("device_lists.jl")
+include("tree/device_builder.jl")
 include("device_passes.jl")
 
 export Laplace2D, Helmholtz2D, Yukawa2D, LaplaceDipoleTest, Stokeslet2D, pressure_kernel, homogeneity
@@ -43,6 +44,6 @@ export Tree, locate, locate!, square_bbox
 export KernelIndependent, CubeKernelIndependent, SquareKernelIndependent, BlackBox, SphericalHarmonics, StokesHarmonics, OperatorCache
 export FMM, FMMState, build_expansions, build_expansions!
 export evaluate, evaluate!, evaluate_at_sources, evaluate_at_sources!
-export DeviceEvaluator, device_state, DevicePlan, device_build_expansions!, device_matvec!
+export DeviceEvaluator, device_state, DevicePlan, device_build_expansions!, device_matvec!, DeviceTree, device_tree
 
 end

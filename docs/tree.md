@@ -92,10 +92,34 @@ tagging, the flattening and the interaction lists (a count pass, a prefix sum an
 fill pass per level, each over the targets) run one thread region per level with
 their bodies in their own functions; the few large nodes of the first levels are
 sorted chunk-parallel, the same stable counting sort whatever the chunking, so the
-tree is independent of the thread count (asserted in `test/test_tree.jl`). The
-restriction scans and the depths are cheap and stay serial. 10⁷ sphere points at
+tree is independent of the thread count (asserted in `test/test_tree.jl`). The restriction scans and the depths are cheap and stay serial. 10⁷ sphere points at
 800 per leaf build in 0.21 s on 12 threads of an M3 Max (0.63 s on one; 1.1 s
 before), 10⁷ uniform points at 200 per leaf, 52 M pairs, in 0.33 s (1.5 s before).
+
+## The same tree on the device
+
+`device_tree(xs; ppl, bbox)` (`src/tree/device_builder.jl`) builds the tree from
+points on a GPU (KernelAbstractions; `Array`s run on its CPU backend) with the same
+phases as kernels over nodes and the level loop on the host, one small readback
+per level per pass. The points get a Morton key, their child slots on levels
+2..22 by the exact comparison against the box centers that `child_slot` and
+`locate` use (no coordinate is ever rounded), and are sorted once by the backend's
+`sortperm!`; from then on every box of every level is a run of its key prefix
+inside its parent's run, found by two binary searches, and no point moves again.
+The refinement decision, the colleague tagging (the parent rule as a kernel), the
+depths, the bad-leaf and xlist flags, and the appends of the restriction and ghost
+children are flag, scan, compaction and fill kernels; the flattening numbers the
+levels as the host does (refinement children in parent order, restriction
+children appended per round, ghosts last), so every structural array, the
+interaction lists and the point set of every leaf are identical to the host
+tree's, which `test/test_device_tree.jl` asserts; only the order of the points
+within a leaf differs (the full key here, the input order there). The result is a
+`DeviceTree` (the fields of `Tree` as `Int32`/`UInt8` device arrays plus the sorted
+points); `Tree(dt)` downloads one. `DevicePlan(method, xs; …)` builds the plan
+from it with nothing of the tree on the host: 10⁷ sphere points on the M3 Max's
+GPU in 0.17 s (0.044 s at 10⁶), the whole plan in 0.31 s, against a 0.91 s matvec
+there. Metal's `sortperm!` goes through MPSGraph and compiles per array size, a
+one-time cost per N (about 1 s); CUDA's does not.
 
 ## Why it works
 
