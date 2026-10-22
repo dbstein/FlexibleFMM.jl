@@ -128,7 +128,12 @@ deviations of 1e-7).
 abstract type MathPolicy end
 struct PreciseMath <: MathPolicy end
 struct FastMath <: MathPolicy end
-@inline _rinv(::PreciseMath, r2) = 1 / sqrt(r2)
+@inline _rinv(::PreciseMath, r2) = 1 / _sqrt(r2)
+# the square root without Julia's domain check: `r2` is a sum of squares, and the
+# check's throw inside the near-field loop keeps LLVM from vectorising the loop
+# over the sources on x86 (the same instruction, `llvm.sqrt`, otherwise)
+@inline _sqrt(x::Union{Float32,Float64}) = Base.sqrt_llvm(x)
+@inline _sqrt(x) = sqrt(x)
 fastmath(K) = K
 
 """
