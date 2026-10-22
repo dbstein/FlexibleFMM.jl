@@ -396,26 +396,28 @@ function _spectral_m2l_level!(pL::AbstractMatrix, ops::LevelOperators, Mp::Abstr
         end
     end
     _from_blocked!(reshape(Û, nfreq, ncp * nl), Ub, B)
-    # dense corrections per pair: the pinned pressure and the point-source column
-    # (targets are unique within an offset)
-    for f in eachindex(ops.M2L)
-        pr = pair_range(il, f)
-        op = ops.M2L[f]
-        (isempty(pr) || (isempty(op.pin_row) && isempty(op.src_col))) && continue
-        Threads.@threads :dynamic for idx in pr
+    # dense corrections per pair: the pinned pressure and the point-source column,
+    # over the level's by-target view in one thread region (the tasks own targets;
+    # a region per offset, 316 per level, cost 48 s on a 96-core node)
+    if any(op -> !(isempty(op.pin_row) && isempty(op.src_col)), ops.M2L)
+        Threads.@threads :dynamic for g in eachindex(il.torder)
             @inbounds begin
-                t = il.tgt[idx] - off
-                if !isempty(op.pin_row)
-                    acc = zero(S)
-                    for j in eachindex(op.pin_row)
-                        acc += op.pin_row[j] * Mp[j, il.src[idx]]
+                t = il.torder[g] - off
+                for q in il.tptr[g]:il.tptr[g+1]-1
+                    op = ops.M2L[il.tfar[q]]
+                    src = il.tsrc[q]
+                    if !isempty(op.pin_row)
+                        acc = zero(S)
+                        for j in eachindex(op.pin_row)
+                            acc += op.pin_row[j] * Mp[j, src]
+                        end
+                        pL[nc * N + 1, t] += α * acc
                     end
-                    pL[nc * N + 1, t] += α * acc
-                end
-                if !isempty(op.src_col)
-                    q = Mp[end, il.src[idx]]
-                    for j in 1:nc * N
-                        pL[j, t] += α * op.src_col[j] * q
+                    if !isempty(op.src_col)
+                        v = Mp[end, src]
+                        for j in 1:nc * N
+                            pL[j, t] += α * op.src_col[j] * v
+                        end
                     end
                 end
             end

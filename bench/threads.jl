@@ -34,10 +34,15 @@ let rng = MersenneTwister(2), n = 600, K = Stokeslet3D(Float32)
     near(K, src, τ, x) = (acc = zero(SVector{3,Float32}); @inbounds for j in eachindex(src); acc += FlexibleFMM.source_field(K, src[j], x, τ[j]); end; acc)
     near(K, src, τ, x)
     ir = sprint(code_llvm, near, Tuple{typeof(K),typeof(src),typeof(τ),typeof(x)})
-    nvec = count(l -> occursin(r"<\d+ x float>", l), split(ir, '\n'))
+    lines = split(ir, '\n')
+    nvec = count(l -> occursin(r"<\d+ x float>", l), lines)
+    # a loop vectorised across sources has a vector.body block and vector square roots
+    # (a vectorised body with only 3- or 4-wide vectors is the per-point arithmetic)
+    vbody = count(l -> occursin("vector.body", l), lines)
+    vsqrt = [m.match for m in eachmatch(r"llvm\.sqrt\.v\d+f32|fdiv (fast )?<\d+ x float>|sqrt <\d+ x float>", ir)]
     reps = 2000
     tt = minimum(@elapsed(for _ in 1:reps; near(K, src, τ, x); end) for _ in 1:5)
-    @printf "near field, one core, Float32 Stokeslet: %.0f M evaluations/s, %d vector float lines in the loop's IR\n" reps * n / tt / 1e6 nvec
+    @printf "near field, one core, Float32 Stokeslet: %.0f M evaluations/s, %d vector float lines in the loop's IR, vector.body %d, vector sqrt/div: %s\n" reps * n / tt / 1e6 nvec vbody join(unique(vsqrt), " ")
     # the same loop on structure-of-arrays storage (one vector per coordinate and
     # density component): unit-stride loads instead of the stride-3 loads of a vector
     # of points, which ARM loads with one instruction (ld3) and x86 with shuffles
