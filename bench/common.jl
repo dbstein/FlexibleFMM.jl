@@ -62,7 +62,7 @@ function parse_method(s, K, ::Val{D}) where {D}
         label = "Harmonics$rest" * (tol > 0 ? " tol=$tol" : "")
         K isa Union{Laplace3D,Yukawa3D} && return (label, SphericalHarmonics(K; p=parse(Int, rest), tol=tol))
         K isa Stokeslet3D && return (label, StokesHarmonics(K; p=parse(Int, rest), tol=tol))
-        error("the harmonic methods take the Laplace, Yukawa and Stokes kernels")
+        return (label, nothing)                                  # not for this kernel: the scripts skip it
     end
     D == 2 || error("method $s is 2D; use cube:p[:d] or harmonics:p in 3D")
     name == "ki" && return ("KI$rest", KernelIndependent(K; nequiv=parse(Int, rest)))

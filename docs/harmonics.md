@@ -334,11 +334,16 @@ sums (the helix rows exclude the 0.19 s tree build counted in the library's tota
 
 | | harmonics p = 16, tol 1e-6 | harmonics p = 20, tol 1e-7 | cube p = 8 | FMM3D eps 1e-6 | FMM3D eps 1e-9 |
 |---|---|---|---|---|---|
-| uniform | 0.27 s, 1.8e-7 | 0.37 s, 1.4e-8 | 0.43 s, 4.3e-8 | 0.59 s, 1.5e-7 | 0.54 s, 4.8e-11 |
-| helix | 0.34 s, 9.4e-8 | 0.57 s, 1.1e-8 | 2.2 s, 2.1e-8 | 3.5 s, 1.5e-7 | 4.5 s, 1.9e-10 |
+| uniform | 0.29 s, 1.4e-7 | 0.37 s, 1.4e-8 | 0.36 s, 3.2e-8 | 0.59 s, 1.0e-7 | 0.54 s, 4.1e-11 |
+| helix | 0.32 s, 6.8e-8 | 0.57 s, 1.1e-8 | 1.6 s, 5.5e-8 | 3.5 s, 8.9e-8 | 4.3 s, 3.9e-11 |
 
 At matched error the harmonic Yukawa method is 2× faster than FMM3D on uniform
-data and 10× on the fibre, where the cube method is 6× behind it.
+data and 10× on the fibre, where the cube method is 5× behind it. The same script
+for Laplace and Stokes (warm matvecs, `10⁵` points, `ppl = 200`): Laplace uniform
+harmonics 0.16 s (1.4e-7), cube 0.14 s (3.2e-8), FMM3D 0.35 s (1.0e-7); Laplace
+helix 0.26 / 1.4 / 1.8 s; Stokes uniform harmonics 0.59 s (3.9e-6), cube 1.08 s
+(3.6e-7), FMM3D 1.15 s (1.8e-6); Stokes helix 1.3 / 13 / 4.6 s; stresslets helix
+1.2 / 13 / 4.9 s.
 
 ## Next
 

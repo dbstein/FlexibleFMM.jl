@@ -89,6 +89,7 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T)
         for ppl in ppls, kspec in kernels, mspec in methods
             kname, K = parse_kernel(kspec, Val(dim), T)
             mname, m = parse_method(mspec, K, Val(dim))
+            m === nothing && continue                            # a method not for this kernel
             τ = density(rng, kernel_kind(kspec), K, N, Val(dim))
             run_case("$kname $mname / $dname", m, pts, τ, targets; ppl=ppl, to=to)
         end

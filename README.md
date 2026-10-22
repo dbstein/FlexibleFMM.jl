@@ -91,8 +91,10 @@ worst-case translation error of about `0.547^nequiv` (`1e-8` at 32, `2e-12` at 4
 rounding floor `~1e-14` near 64) and global relative errors one to two orders
 smaller (10 digits at 32 points on uniform data); see `docs/kifmm.md`, also for the
 two known degeneracies (a Laplace box width of `≈ 0.7735` and Helmholtz resonances
-at `k·w ≈ 3.40, 5.42, …`) and for timings against FMM2D/FMM3D (2D: 1.5–2× faster
-than FMM2D; 3D: level with FMM3D for Laplace and Helmholtz, 25% behind for Stokes). The
+at `k·w ≈ 3.40, 5.42, …`) and for timings against FMM2D/FMM3D (2D: 2–4× faster
+than FMM2D; 3D: the cube method 2.5× faster than FMM3D for Laplace and level for
+Helmholtz and Stokes on uniform points, the harmonic methods 2× faster for Stokes
+and 3–7× on fibres). The
 black-box method converges geometrically in `p`. In
 3D the cube method at `p = 8` has a worst-case translation error of `1e-6` for
 Laplace (global errors about `1e-7`) and `3e-6`, `1e-3`, `1e-3` for stokeslets,

@@ -165,18 +165,27 @@ excluded, 0.01–0.15 s), theirs the one-shot call including their tree build.
 
 | case | ours | FMM2D / FMM3D |
 |---|---|---|
-| 2D Laplace, 10⁶ | circles 30: 0.25 s, 2e-8; circles 60: 0.40 s, 8e-14 | 0.66 s, 2e-9 (eps 1e-6); 0.66 s, 2e-13 (1e-9) |
-| 2D Helmholtz k = 10, 10⁶ | circles 60: 1.46 s, 1e-13 | 1.43 s, 5e-9 (1e-6); 1.69 s, 3e-12 (1e-9) |
-| 2D Stokes, 10⁶ | circles 60: 0.76 s, 1e-11 | 1.28 s, 2e-8 (1e-6); 1.34 s, 4e-12 (1e-9) |
-| 3D Laplace, 10⁵ | cube 8: 0.31 s, 3e-8 (0.45 s before the fold and the real transforms) | 0.10 s, 7e-5 (1e-3); 0.36 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
-| 3D Helmholtz k = 3, 10⁵ | cube 8: 0.80 s, 3e-8 | 0.77 s, 2e-7 (1e-6); 0.82 s, 2e-11 (1e-9) |
-| 3D stokeslets, 10⁵ | cube 8: 1.4 s, 4e-7 (2.6 s before) | 0.26 s, 5e-4 (1e-3); 1.15 s, 2e-6 (1e-6) |
-| 3D stresslets, 10⁵ | cube 8: 1.4 s, 1e-7 (2.5 s before) | 1.3 s, 5e-7 (1e-6) |
+| 2D Laplace, 10⁶ | circles 30: 0.17 s, 2e-8; circles 60: 0.31 s, 8e-14 | 0.69 s, 2e-9 (eps 1e-6); 0.64 s, 2e-13 (1e-9) |
+| 2D Helmholtz k = 10, 10⁶ | circles 30: 0.75 s, 4e-8; circles 60: 1.17 s, 8e-14 | 1.48 s, 8e-9 (1e-6); 1.68 s, 3e-12 (1e-9) |
+| 2D Stokes, 10⁶ | circles 30: 0.35 s, 1e-6; circles 60: 0.64 s, 8e-12 | 1.27 s, 8e-9 (1e-6); 1.34 s, 3e-12 (1e-9) |
+| 3D Laplace, 10⁵ | cube 8: 0.14 s, 3e-8 (0.45 s before the fold and the real transforms) | 0.35 s, 1e-7 (1e-6); 0.26 s, 4e-11 (1e-9) |
+| 3D Helmholtz k = 3, 10⁵ | cube 8: 0.65 s, 3e-8 | 0.75 s, 3e-7 (1e-6); 0.82 s, 3e-11 (1e-9) |
+| 3D Yukawa k = 5, 10⁵ | cube 8: 0.36 s, 3e-8 | 0.59 s, 1e-7 (1e-6); 0.54 s, 4e-11 (1e-9) |
+| 3D stokeslets, 10⁵ | cube 8: 1.08 s, 4e-7 (2.6 s before) | 1.15 s, 2e-6 (1e-6); 1.14 s, 1e-9 (1e-9) |
+| 3D stresslets, 10⁵ | cube 8: 1.29 s, 6e-8 (2.5 s before) | 1.27 s, 4e-7 (1e-6); 1.48 s, 4e-10 (1e-9) |
 
-In 2D the circle method is 1.5–2× faster than FMM2D at equal or better accuracy. In
-3D, after folding the pseudo-inverses and the real-input transforms, the cube
-method is level with FMM3D for Laplace and Helmholtz and 10–25% slower for
-Stokes at comparable accuracy; the 3D rows above are at 200 points per leaf.
+The rows are warm matvecs (the best of three on an initialised state; the
+comparison script reports the first application of a fresh state, which creates
+the spectral workspaces, separately, after an external review noted that the
+earlier rows had included it). In 2D the circle method is 2–4× faster than FMM2D
+at equal or better accuracy. In 3D, after folding the pseudo-inverses and the
+real-input transforms, the cube method is 2.5× faster than FMM3D for Laplace and
+1.6× for Yukawa and level for Helmholtz and Stokes at comparable accuracy; the 3D
+rows above are at 200 points per leaf on uniform points. On a fibre (a helix of
+10⁵ points, 8 levels) the picture changes: the cube method takes 1.4 s for Laplace
+and 13 s for Stokes against FMM3D's 1.8 and 4.6 s, and the harmonic methods 0.26
+and 1.3 s (`docs/harmonics.md`): the deep tree with small boxes multiplies the
+cube method's per-box surface evaluations and spectra.
 
 With `device=metal` our rows run on the GPU (`DevicePlan` + `device_matvec!`, the
 M3 Max in Float32, the libraries still on the CPU in Float64): Laplace cube 8 in

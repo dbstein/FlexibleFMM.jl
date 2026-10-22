@@ -68,6 +68,9 @@ cvt(τ::AbstractVector) = TP === Float64 ? τ : map(cvt, τ)
 # and the matvec is the best of three warm repetitions on that state.
 function run_ours(m, τ, ptsT, tgT; dev=to)
     local f, st, ut
+    nw = min(length(ptsT), 2000)        # a small warm-up compiles everything, so "first" is the workspaces
+    fw = FMM(m, ptsT[1:nw]; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)))
+    sw = build_expansions(fw, ptsT[1:nw], τ[1:nw]); evaluate_at_sources(fw, sw); evaluate(fw, sw, tgT[1:10])
     cache = OperatorCache(m)            # operators are built once per kernel and order and reused
     f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
     t_tree = @elapsed f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
@@ -156,6 +159,7 @@ for dname in dists
         rows = Any[]
         for mspec in methods
             mname, m = parse_method(mspec, KT, Val(dim))
+            m === nothing && (println("  ($mname: not for this kernel)"); continue)
             devm = m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod} ? dev : nothing   # the device passes
             r = run_ours(m, cvt(τ), ptsT, tgT; dev=devm)
             push!(rows, ("ours $mname ($(r[6]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[4], r[1] + r[3] + r[4], relerr(r[5], uex)))
