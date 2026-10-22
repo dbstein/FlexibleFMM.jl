@@ -94,9 +94,11 @@ stresslets and doublets; `p = 10` gains a further 30× (`docs/kifmm.md`).
   `device=metal` from the `bench/gpu` environment (`julia --project=bench/gpu -t auto
   bench/bench.jl dim=3 device=metal …`) it adds the device matvec per case
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
-  FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies
-  (`julia --project=bench/compare -t auto bench/compare/compare.jl dim=3 N=100000`,
-  `device=metal` puts our rows on the GPU in Float32)
+  FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies; the
+  same `kernel`, `method`, `dist`, `ppl` and `device` options as the benchmark plus
+  `eps` for the libraries (`julia --project=bench/compare -t auto
+  bench/compare/compare.jl dim=3 N=100000 kernel=laplace,stokes method=cube:6,cube:8
+  eps=1e-3,1e-6 device=metal`; the specifications are listed in `bench/common.jl`)
 - `bench/gpu/` — the device evaluation and matvec on Apple Silicon through
   Metal.jl, in its own environment (`julia --project=bench/gpu -t auto
   bench/gpu/metal_matvec.jl`)
