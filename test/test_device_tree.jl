@@ -4,8 +4,10 @@
 using FlexibleFMM: device_tree, DeviceTree, nlevels
 
 rng = MersenneTwister(41)
-same_structure(a::Tree, b::Tree) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(Tree) if f ∉ (:perm, :ilists)) &&
-    all(all(getfield(x, g) == getfield(y, g) for g in fieldnames(FlexibleFMM.InteractionList)) for (x, y) in zip(a.ilists, b.ilists))
+# every field but the orders of the points within the leaves (`perm` and its per-group alias)
+same_structure(a::Tree, b::Tree) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(Tree) if f ∉ (:perm, :gperm, :ilists)) &&
+    all(all(getfield(x, g) == getfield(y, g) for g in fieldnames(FlexibleFMM.InteractionList)) for (x, y) in zip(a.ilists, b.ilists)) &&
+    all(sort(a.gperm[g]) == sort(b.gperm[g]) for g in eachindex(a.gperm))
 
 @testset "device tree equals the host tree: $(name)" for (name, pts, ppl) in (
         ("mixed 2D", mixed_points(rng, 8000), 30), ("one quadrant 2D", [0.5 .* p for p in uniform_points(rng, 3000)], 20),
