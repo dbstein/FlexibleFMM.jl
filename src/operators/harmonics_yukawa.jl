@@ -256,13 +256,15 @@ end
 
 function s2m!(col::AbstractVector, m::SphericalHarmonics{<:Yukawa3D}, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{3})
+    fill!(col, zero(eltype(col)))
+    return s2m_accumulate!(col, m, ops, xs, τs, c)
+end
+function s2m_accumulate!(col::AbstractVector, m::SphericalHarmonics{<:Yukawa3D}, ops::LevelOperators, xs::AbstractVector,
+                         τs::AbstractVector, c::SVector{3})
     s = ops.extra.scale
     tb = ops.extra.tb
     κ̂ = ops.extra.κ̂
     p = m.p
-    @inbounds for n in eachindex(col)
-        col[n] = zero(eltype(col))
-    end
     @inbounds for i in eachindex(xs)
         x̂ = (xs[i] - c) * s
         u = _radial_weights(κ̂ * κ̂ * sum(abs2, x̂), p + 1)

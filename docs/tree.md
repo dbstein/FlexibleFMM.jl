@@ -96,6 +96,20 @@ tree is independent of the thread count (asserted in `test/test_tree.jl`). The r
 800 per leaf build in 0.21 s on 12 threads of an M3 Max (0.63 s on one; 1.1 s
 before), 10⁷ uniform points at 200 per leaf, 52 M pairs, in 0.33 s (1.5 s before).
 
+## Groups of points
+
+`Tree(groups::Tuple)` builds the tree on the concatenation of several point groups
+and adds per group the range of every node in the group's own numbering, the
+original index within the group of each group-local sorted point, and its leaf
+(`gpoints`, `gperm`, `gpoint_node`; `group_sizes`). Nothing in the construction
+changes: in the sorted order restricted to one group, every node's points of that
+group are one contiguous range (the restriction of a contiguous range to a
+subsequence is contiguous), so the tables are a post-processing of `perm`:
+childless nodes take their group counts in sorted order, nodes with children the
+union of their children's ranges. With one group the tables alias `points`,
+`perm` and `point_node`. The FMM uses them to carry a different density type per
+group in one pass (`docs/framework.md`, Groups of sources).
+
 ## The same tree on the device
 
 `device_tree(xs; ppl, bbox)` (`src/tree/device_builder.jl`) builds the tree from

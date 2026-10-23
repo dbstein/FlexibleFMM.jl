@@ -197,6 +197,38 @@ Adding a singularity type (a Stokes rotlet or stresslet, say) means a struct, a
 `source_field` method, an `accumulate_moments!` method for the black-box method,
 and `target_field` methods for the outputs it should support.
 
+### Groups of sources
+
+Several groups of points, each with its own density type and its own outputs, run
+as one FMM: `Tree(groups::Tuple)` / `FMM(method, groups::Tuple)` build one tree on
+the concatenation, `build_expansions!(state, f, groups, τs)` takes one density
+vector per group (`nothing` for a group that is targets only), and
+`evaluate_at_sources!(out, f, state, g; output)` evaluates group `g` at its own
+points with the output it wants; `evaluate` at arbitrary points is unchanged. No
+sort key changes: the tree's stable counting sorts leave every node's points
+contiguous, so in the sorted order restricted to one group every node's points of
+that group are one contiguous range too (the restriction of a contiguous range to
+a subsequence is contiguous), and the tree stores per group the range of every
+node in the group's own numbering (`gpoints`), the original index within the group
+of every group-local sorted point (`gperm`) and its leaf (`gpoint_node`), computed
+from `perm` after flattening (childless nodes from their group counts in sorted
+order, nodes with children as the union of their children's ranges); with one
+group they alias `points`, `perm` and `point_node`. The state holds one typed
+vector of points and densities per group, and every loop over a node's points is a
+loop over the groups, unrolled by recursion over the tuple of densities, whose body
+is the typed, vectorised one-group loop: the S2M accumulates the groups into one
+column (`s2m_accumulate!`, `s2m!` without its zeroing), the near field sums the
+groups' ranges of each colleague with the self term excluded in the target's own
+group only. So a pair costs exactly its density kind, nothing is zero-padded, and
+the far field is paid once; with one group the results are bitwise what they were.
+Why not the alternatives (`docs/notes/heterogeneous_sources.md`): every source
+carrying every kind, zero-padded, costs 2.2× on velocities and 6–10× once every
+target also computes the gradient and pressure a few need; separate FMMs per kind
+on their own trees cost 4× the ideal near field, because a small kind's tree is
+coarse and the other kinds' targets sum whole colleague ranges of it; a tagged
+density per element runs scalar at 1.6–1.9×. The device passes take one group for
+now.
+
 ## Where extensions plug in
 
 - **Another expansion scheme**: a new `AbstractMethod` with the five operations and

@@ -87,11 +87,11 @@ function _state!(plan::StokesFMMPlan{D}, srcs, τ) where {D}
     Tτ = eltype(τ)
     S = expansion_eltype(plan.fmm.method, Tp, Tτ)
     st = plan.state
-    if !(st isa FMMState{S,SVector{D,Tp},Tτ})
+    if !(st isa FMMState{S,SVector{D,Tp},Tuple{Vector{Tτ}}})
         st = FMMState(plan.fmm, S, Tp, Tτ)
         plan.state = st
     end
-    return st::FMMState{S,SVector{D,Tp},Tτ}
+    return st::FMMState{S,SVector{D,Tp},Tuple{Vector{Tτ}}}
 end
 
 """

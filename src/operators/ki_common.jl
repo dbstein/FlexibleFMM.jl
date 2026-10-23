@@ -250,11 +250,15 @@ the large surface (relative to the center `c`).
 """
 function s2m!(col::AbstractVector, m::AbstractKernelIndependent, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{D}) where {D}
+    fill!(col, zero(eltype(col)))
+    return s2m_accumulate!(col, m, ops, xs, τs, c)
+end
+function s2m_accumulate!(col::AbstractVector, m::AbstractKernelIndependent, ops::LevelOperators, xs::AbstractVector,
+                         τs::AbstractVector, c::SVector{D}) where {D}
     K = m.kernel
     ys = ops.extra.ysoa
     N = size(ys, 1)
     nc = Val(ncomp(K, Val(D)))
-    fill!(col, zero(eltype(col)))
     # sources outer, check points inner over the structure-of-arrays surface, so that
     # the kernel vectorises across check points (1.5× Laplace, 1.3× Stokes measured)
     @inbounds for j in eachindex(xs)

@@ -201,6 +201,13 @@ partial_local_length(m::AbstractMethod) = expansion_length(m)
 function operator_eltype end
 function level_operators end
 function s2m! end
+"""
+    s2m_accumulate!(col, m, ops, xs, τs, c)
+
+`s2m!` without the zeroing of `col`: adds the sources' contribution, so that the
+groups of a node (one density type each) accumulate into one column.
+"""
+function s2m_accumulate! end
 function l2t end
 function near_kernel end
 function partial_to_multipole! end
@@ -212,6 +219,8 @@ function partial_to_local! end
 Element type of expansions built from positions of eltype `Tpos` and densities of
 eltype `Tτ`: the operator eltype promoted with the kernel's output on such positions.
 """
+expansion_eltype(m::AbstractMethod, ::Type{Tpos}, Tτs::Tuple) where {Tpos} =
+    mapreduce(T -> T === Nothing ? Bool : expansion_eltype(m, Tpos, T), promote_type, Tτs)   # a target-only group adds nothing
 function expansion_eltype(m::AbstractMethod, ::Type{Tpos}, ::Type{Tτ}) where {Tpos,Tτ}
     K = near_kernel(m)
     D = dimension(m)

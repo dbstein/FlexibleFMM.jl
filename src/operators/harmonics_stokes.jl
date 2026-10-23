@@ -222,13 +222,15 @@ end
 
 function s2m!(col::AbstractVector, m::StokesHarmonics, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{3})
+    fill!(col, zero(eltype(col)))
+    return s2m_accumulate!(col, m, ops, xs, τs, c)
+end
+function s2m_accumulate!(col::AbstractVector, m::StokesHarmonics, ops::LevelOperators, xs::AbstractVector,
+                         τs::AbstractVector, c::SVector{3})
     s = ops.extra.scale
     tb = ops.extra.tb
     p = m.p
     N = (p + 1)^2
-    @inbounds for n in eachindex(col)
-        col[n] = zero(eltype(col))
-    end
     @inbounds for i in eachindex(xs)
         _stokes_accumulate!(col, N, (xs[i] - c) * s, p, tb, τs[i], s)
     end

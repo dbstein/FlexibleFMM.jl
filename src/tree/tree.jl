@@ -60,6 +60,14 @@ struct Tree{D,T<:AbstractFloat}
     point_node::Vector{Int}
     # offset bookkeeping
     far_index::Vector{Int}
+    # groups of points (one by default): per group the sizes, the point range of every
+    # node in the group's own numbering, the original index within the group of each
+    # group-local sorted point, and its leaf; with one group these alias `points`,
+    # `perm` and `point_node`
+    group_sizes::Vector{Int}
+    gpoints::Vector{Vector{UnitRange{Int}}}
+    gperm::Vector{Vector{Int}}
+    gpoint_node::Vector{Vector{Int}}
 end
 
 nlevels(t::Tree) = length(t.level_range)
@@ -109,4 +117,67 @@ function Base.show(io::IO, t::Tree{D,T}) where {D,T}
     print(io, "Tree{$D,$T}: ", npoints(t), " points, ", nnodes(t), " nodes on ",
           nlevels(t), " levels (", count(t.ghost), " ghosts, ", count(t.xlist),
           " xlist leaves, W0 = ", t.W0, ")")
+end
+
+ngroups(t::Tree) = length(t.group_sizes)
+
+# The per-group tables of a tree built on the concatenation of `sizes` groups. In
+# the sorted order restricted to a group every node's points of that group are one
+# contiguous range (the restriction of a contiguous range to a subsequence is
+# contiguous): childless nodes get their group ranges from their group counts, in
+# sorted order; nodes with children the union of their children's (contiguous, in
+# slot order). No sort key changes; the tables are a post-processing of `perm`.
+function _group_tables(level_range, child_first, points, perm, point_node, sizes::Vector{Int}, ::Val{D}) where {D}
+    G = length(sizes)
+    n = length(points)
+    N = length(perm)
+    starts = cumsum(vcat(0, sizes))                     # group g holds original indices starts[g]+1:starts[g+1]
+    gid = Vector{Int}(undef, N)                         # the group of each sorted point
+    glocal = Vector{Int}(undef, N)                      # its index in the group's sorted numbering
+    counters = zeros(Int, G)
+    gperm = [Vector{Int}(undef, sizes[g]) for g in 1:G]
+    gpoint_node = [Vector{Int}(undef, sizes[g]) for g in 1:G]
+    @inbounds for j in 1:N
+        i = perm[j]
+        g = searchsortedlast(starts, i - 1)             # starts[g] < i <= starts[g+1]
+        g = min(g, G)
+        k = (counters[g] += 1)
+        gid[j] = g
+        glocal[j] = k
+        gperm[g][k] = i - starts[g]
+        gpoint_node[g][k] = point_node[j]
+    end
+    gpoints = [Vector{UnitRange{Int}}(undef, n) for _ in 1:G]
+    nc = 1 << D
+    # childless nodes: the group-local indices of their points are consecutive, so the
+    # range is that of the first and last group-g point in the node; nodes with children
+    # (processed level by level from the bottom): the union of the children's ranges
+    for l in length(level_range):-1:1
+        @inbounds for i in level_range[l]
+            cf = child_first[i]
+            if cf == 0
+                r = points[i]
+                for g in 1:G
+                    lo, hi = typemax(Int), 0
+                    for j in r
+                        if gid[j] == g
+                            lo = min(lo, glocal[j]); hi = max(hi, glocal[j])
+                        end
+                    end
+                    gpoints[g][i] = hi == 0 ? (1:0) : (lo:hi)
+                end
+            else
+                for g in 1:G
+                    lo, hi = typemax(Int), 0
+                    for c in cf:cf+nc-1
+                        rc = gpoints[g][c]
+                        isempty(rc) && continue
+                        lo = min(lo, first(rc)); hi = max(hi, last(rc))
+                    end
+                    gpoints[g][i] = hi == 0 ? (1:0) : (lo:hi)
+                end
+            end
+        end
+    end
+    return gpoints, gperm, gpoint_node
 end

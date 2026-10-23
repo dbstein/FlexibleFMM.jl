@@ -279,7 +279,7 @@ end
         f = FMM(m, pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
         st = build_expansions(f, pts, τ)
         st2 = FMMState(f, Float64, Float64, Float64)
-        st2.sources .= st.sources; st2.τ .= st.τ
+        st2.sources[1] .= st.sources[1]; st2.τ[1] .= st.τ[1]
         upward_pass!(st2, f)
         @test st2.multipoles ≈ st.multipoles
         for l in 3:nlevels(f)

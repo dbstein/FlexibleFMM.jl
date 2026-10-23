@@ -105,7 +105,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
     if to === nothing
         perm = f.tree.perm
         st = FMMState(f, expansion_eltype(m, T, eltype(τ)), T, eltype(τ))
-        st.sources .= pts[perm]; st.τ .= τ[perm]
+        st.sources[1] .= pts[perm]; st.τ[1] .= τ[perm]
         # the first application of a fresh state (it creates the method's workspaces, the
         # spectral one of the cube method in particular), then the warm passes, best of three
         t_first = @elapsed (upward_pass!(st, f); downward_pass!(st, f); evaluate_at_sources(f, st))

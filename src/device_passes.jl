@@ -87,6 +87,7 @@ _mover(xs::AbstractArray) = typeof(xs).name.wrapper
 
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
                     verbose::Bool=false) where {D,T}
+    ngroups(f.tree) == 1 || throw(ArgumentError("the device passes take one group of sources for now"))
     dt = DeviceTree(f.tree, to)
     return _device_plan(dt, f.method, f.ops, [to(Int32.(f.s2m_nodes[l])) for l in 1:nlevels(dt)],
                         [to(Int32.(f.leaf_nodes[l])) for l in 1:nlevels(dt)], to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)

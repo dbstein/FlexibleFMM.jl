@@ -31,11 +31,15 @@ the operators of its levels from `cache`. The root box is `bbox = (origin, width
 function FMM(method::AbstractMethod, sources; ppl::Integer=50, bbox=nothing,
              cache::OperatorCache=OperatorCache(method), max_levels::Integer=30)
     cache.method === method || throw(ArgumentError("the cache was built for a different method"))
-    D = point_dimension(sources)
+    groups = sources isa Tuple ? sources : (sources,)       # groups of points: one FMM, one density type per group
+    isempty(groups) && throw(ArgumentError("no sources"))
+    D = point_dimension(groups[1])
     D == dimension(method) || throw(ArgumentError("$(D)-dimensional points with a $(dimension(method))-dimensional method"))
-    pts = as_svectors(Val(D), sources)
+    gpts = [as_svectors(Val(D), g) for g in groups]
+    pts = length(gpts) == 1 ? gpts[1] : vcat(gpts...)
     origin, W0, e0 = fit_box!(cache, pts, bbox)
     tree = Tree(pts; ppl=ppl, bbox=(origin, W0), max_levels=max_levels)
+    length(gpts) == 1 || (tree = _with_groups(tree, [length(g) for g in gpts]))
     L = nlevels(tree)
     ops = [get_operators!(cache, e0 + 1 - l) for l in 1:L]
     s2m_nodes = [[i for i in tree.level_range[l] if !has_children(tree, i) && tree.has_source[i]]
@@ -57,12 +61,12 @@ end
 Expansions of one right-hand side: `multipoles` and `locals` (one column per node),
 the sources and densities in tree order, and workspaces.
 """
-struct FMMState{S,P<:SVector,Tτ}
+struct FMMState{S,P<:SVector,TT<:Tuple}
     multipoles::Matrix{S}
     locals::Matrix{S}
     plocals::Matrix{S}     # partial locals (check data) of every node: what L2L consumes
-    sources::Vector{P}
-    τ::Vector{Tτ}
+    sources::Vector{Vector{P}}   # per group, in the group's sorted numbering
+    τ::TT                        # per group its densities (a vector, or `nothing` for a target-only group)
     partial::Matrix{S}     # partial expansions of the level being processed, addressed as
                            # flat storage (reshape of a linear-range view): the sibling-group
                            # reshape of a two-range view is not a StridedMatrix and would
@@ -72,19 +76,23 @@ struct FMMState{S,P<:SVector,Tτ}
     scratch::Dict{Any,Any} # method-specific workspaces (spectral translation)
 end
 
-function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {D,T,S,Tp,Tτ}
+FMMState(f::FMM, ::Type{S}, ::Type{Tp}, ::Type{Tτ}) where {S,Tp,Tτ} = FMMState(f, S, Tp, (Tτ,))
+function FMMState(f::FMM{D,T}, ::Type{S}, ::Type{Tp}, Tτs::Tuple) where {D,T,S,Tp}
     m = f.method
     rows = max(multipole_length(m), local_length(m), partial_multipole_length(m), partial_local_length(m))
     tree = f.tree
     n = nnodes(tree)
-    N = npoints(tree)
+    sizes = tree.group_sizes
+    length(Tτs) == length(sizes) || throw(ArgumentError("one density type per group of the tree"))
     nc = maximum(length, tree.level_range)
-    return FMMState{S,SVector{D,Tp},Tτ}(zeros(S, multipole_length(m), n), zeros(S, local_length(m), n),
-                                       zeros(S, partial_local_length(m), n),
-                                       Vector{SVector{D,Tp}}(undef, N), Vector{Tτ}(undef, N),
-                                       Matrix{S}(undef, rows, nc), Matrix{S}(undef, rows, nc),
-                                       Matrix{S}(undef, rows, nc), Dict{Any,Any}())
+    τ = ntuple(g -> Tτs[g] === Nothing ? nothing : Vector{Tτs[g]}(undef, sizes[g]), length(sizes))
+    return FMMState{S,SVector{D,Tp},typeof(τ)}(zeros(S, multipole_length(m), n), zeros(S, local_length(m), n),
+                                              zeros(S, partial_local_length(m), n),
+                                              [Vector{SVector{D,Tp}}(undef, sz) for sz in sizes], τ,
+                                              Matrix{S}(undef, rows, nc), Matrix{S}(undef, rows, nc),
+                                              Matrix{S}(undef, rows, nc), Dict{Any,Any}())
 end
+ngroups(st::FMMState) = length(st.sources)
 
 # Default level-wise M2L: per far offset, gather the source multipoles, one GEMM,
 # scatter-add into the targets (a target appears at most once per offset). Low-rank
@@ -135,18 +143,29 @@ end
 
 # S2M of the listed nodes into the columns of `pM` (local to the level starting at `first`)
 function _s2m_level!(pM::AbstractMatrix, m::AbstractMethod, ops, nodes::Vector{Int}, first::Int,
-                     tree::Tree, sources::AbstractVector, τ::AbstractVector)
+                     tree::Tree, sources::Vector, τ::Tuple)
     chunks = _chunks(length(nodes), 4 * Threads.nthreads())
     Threads.@threads :dynamic for ch in chunks
         @inbounds for q in ch
             node = nodes[q]
-            pr = tree.points[node]
-            s2m!(view(pM, :, node - first + 1), m, ops, view(sources, pr), view(τ, pr),
-                 center(tree, node))
+            col = view(pM, :, node - first + 1)
+            fill!(col, zero(eltype(col)))
+            _s2m_groups!(col, m, ops, tree, node, center(tree, node), sources, τ, 1)
         end
     end
     return pM
 end
+# the groups of a node, each with its own density type (a recursion over the tuple
+# keeps every group's loop the typed, vectorised one); `nothing` densities: no sources
+@inline function _s2m_groups!(col, m, ops, tree, node, c, sources, τ::Tuple, g::Int)
+    τg = first(τ)
+    if τg !== nothing
+        r = tree.gpoints[g][node]
+        isempty(r) || s2m_accumulate!(col, m, ops, view(sources[g], r), view(τg, r), c)
+    end
+    return _s2m_groups!(col, m, ops, tree, node, c, sources, Base.tail(τ), g + 1)
+end
+@inline _s2m_groups!(col, m, ops, tree, node, c, sources, ::Tuple{}, g::Int) = col
 
 function upward_pass!(state::FMMState{S}, f::FMM{D}) where {S,D}
     tree = f.tree
@@ -248,18 +267,30 @@ end
 Form all multipole and local expansions for the sources (in the order the tree was
 built from, any eltype) and densities `τ`.
 """
-function build_expansions!(state::FMMState, f::FMM{D}, sources, τ::AbstractVector) where {D}
+build_expansions!(state::FMMState, f::FMM, sources, τ::AbstractVector) = build_expansions!(state, f, (sources,), (τ,))
+function build_expansions!(state::FMMState, f::FMM{D}, sources::Tuple, τs::Tuple) where {D}
     tree = f.tree
-    pts = as_svectors(Val(D), sources)
-    N = npoints(tree)
-    length(pts) == N || throw(DimensionMismatch("expected $N sources"))
-    length(τ) == N || throw(DimensionMismatch("expected $N densities"))
-    supports_density(f.method, eltype(τ)) ||
-        throw(ArgumentError("densities of type $(eltype(τ)) are not supported by $(typeof(f.method).name.name)"))
-    perm = tree.perm
-    @inbounds for j in 1:N
-        state.sources[j] = pts[perm[j]]
-        state.τ[j] = τ[perm[j]]
+    G = ngroups(tree)
+    length(sources) == G == length(τs) == ngroups(state) || throw(DimensionMismatch("expected $G groups of sources and densities"))
+    for g in 1:G
+        pts = as_svectors(Val(D), sources[g])
+        n = tree.group_sizes[g]
+        length(pts) == n || throw(DimensionMismatch("expected $n sources in group $g"))
+        τ = τs[g]
+        gp = tree.gperm[g]
+        sg = state.sources[g]
+        @inbounds for k in 1:n
+            sg[k] = pts[gp[k]]
+        end
+        τ === nothing && (state.τ[g] === nothing || throw(ArgumentError("group $g was given densities before")); continue)
+        state.τ[g] === nothing && throw(ArgumentError("group $g is a target-only group of this state"))
+        length(τ) == n || throw(DimensionMismatch("expected $n densities in group $g"))
+        supports_density(f.method, eltype(τ)) ||
+            throw(ArgumentError("densities of type $(eltype(τ)) are not supported by $(typeof(f.method).name.name)"))
+        tg = state.τ[g]
+        @inbounds for k in 1:n
+            tg[k] = τ[gp[k]]
+        end
     end
     upward_pass!(state, f)
     downward_pass!(state, f)
@@ -272,11 +303,12 @@ end
 Allocating version of `build_expansions!`; the expansion eltype is promoted from the
 operators, the kernel's output on the source eltype, and `eltype(τ)`.
 """
-function build_expansions(f::FMM{D}, sources, τ::AbstractVector) where {D}
-    pts = as_svectors(Val(D), sources)
-    Tp = eltype(eltype(pts))
-    Tτ = eltype(τ)
-    S = expansion_eltype(f.method, Tp, Tτ)
-    state = FMMState(f, S, Tp, Tτ)
-    return build_expansions!(state, f, pts, τ)
+build_expansions(f::FMM, sources, τ::AbstractVector) = build_expansions(f, (sources,), (τ,))
+function build_expansions(f::FMM{D}, sources::Tuple, τs::Tuple) where {D}
+    pts = map(g -> as_svectors(Val(D), g), sources)
+    Tp = eltype(eltype(pts[1]))
+    Tτs = map(τ -> τ === nothing ? Nothing : eltype(τ), τs)
+    S = expansion_eltype(f.method, Tp, Tτs)
+    state = FMMState(f, S, Tp, Tτs)
+    return build_expansions!(state, f, pts, τs)
 end

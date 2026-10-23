@@ -416,8 +416,11 @@ function Tree(dt::DeviceTree{D,T}) where {D,T}
     colleagues = Int.(Array(dt.colleagues))
     far_index = far_index_table(Val(D))
     ilists = build_interaction_lists(Val(D), dt.level_range, cell, parent, child_first, colleagues, ghost, has_source, far_index)
+    points = [plo[i]:phi[i] for i in eachindex(plo)]
+    perm = Int.(Array(dt.perm))
+    point_node = Int.(Array(dt.point_node))
     return Tree{D,T}(dt.origin, dt.W0, dt.level_range, cell, Int.(Array(dt.level)), parent, child_first,
-                     [plo[i]:phi[i] for i in eachindex(plo)], Bool.(Array(dt.leaf)), ghost, Bool.(Array(dt.xlist)), has_source,
-                     colleagues, [Int.(Array(gp)) for gp in dt.group_parent], ilists, Int.(Array(dt.perm)),
-                     Int.(Array(dt.point_node)), far_index)
+                     points, Bool.(Array(dt.leaf)), ghost, Bool.(Array(dt.xlist)), has_source,
+                     colleagues, [Int.(Array(gp)) for gp in dt.group_parent], ilists, perm, point_node, far_index,
+                     [length(perm)], [points], [perm], [point_node])
 end

@@ -107,10 +107,12 @@ action on the basis through `accumulate_moments!`.
 """
 function s2m!(col::AbstractVector, m::BlackBox{K,P}, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{2}) where {K,P}
+    fill!(col, zero(eltype(col)))
+    return s2m_accumulate!(col, m, ops, xs, τs, c)
+end
+function s2m_accumulate!(col::AbstractVector, m::BlackBox{K,P}, ops::LevelOperators, xs::AbstractVector,
+                         τs::AbstractVector, c::SVector{2}) where {K,P}
     s = ops.extra.scale
-    @inbounds for n in eachindex(col)
-        col[n] = zero(eltype(col))
-    end
     @inbounds for i in eachindex(xs)
         accumulate_moments!(col, Val(P), (xs[i] - c) * s, s, τs[i])
     end

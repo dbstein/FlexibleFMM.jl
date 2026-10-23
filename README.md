@@ -1,5 +1,11 @@
 # FlexibleFMM
 
+## Bystander's notes
+
+I wrote the python package FlexMM (https://github.com/dbstein/flexmm) quite a few years ago, primarily as a pedagogical project to really understand how FMMs actually worked. I was also, at that time, particularly taken with the combination of python+numba, and wanted to see if I could make a code as complex as the FMM reasonably efficient in it. The primary novelty was the use of ghost cells to dramatically simplify the list handling (made life easier in the pre-agent hand-coding days!); and the same code that ran a Ying-Biros-Zorin style Kernel-Independent FMM also ran a Fong-Darve style Black-Box FMM with minimal code duplication, so that was cool.  It was also reasonably performant (beating FMMLIB2D at the time). Then FMM2D and FMM3D came out, were substantially faster, I switched to Julia, and the project was abandoned for obvious reasons. More recently, I decided I wanted an FMM that would run performantly on any system, including laptops with GPUs (especially Metal, since I develop on a Macbook Pro). I also wanted the FMM to be differentiable, to support certain nonlinear simulations I was doing. It seemed reasonable to resurrect the project and port it to pure Julia. The fact that the FMM is also easy to verify made this a perfect testbed for Agent-go-wild style coding. So after about a two-day vibe-coding binge, this project came to a reasonable spot. The FMMs are fast, they work on CPUs and any GPU KernelAbstractions can target, they're at least ForwardDifferentiable (probably have to work on reverse mode), they support KI, BB, and classical spherical harmonics FMMs. There's plenty of tests but the package has yet to see any real use in the wild, so use at your own risk. Also expect the API surface to change rapidly, for now.
+
+## Package
+
 A pure-Julia fast multipole method framework in two and three dimensions. One
 driver runs several expansion schemes on an adaptive quadtree or octree whose
 ghost-cell construction makes every far-field interaction a same-width
@@ -44,7 +50,11 @@ u_targets = evaluate(f, st, targets)                # Σ_j K(s_j, t) τ_j
 
 Densities say what a source is: a number is a charge, `Dipole(d)` a double-layer
 source with moment `d` (`Dipole(μ, n)` for strength and normal), and a tuple of
-densities sums its parts. `evaluate(f, st, targets; output=Gradient())` returns
+densities sums its parts. Groups of points with different density types run as one
+FMM: `FMM(m, (pts_a, pts_b, pts_c))`, `build_expansions(f, (pts_a, pts_b, pts_c),
+(τ_a, τ_b, nothing))` (the last group targets only), and
+`evaluate_at_sources(f, st, g; output=…)` for group `g`'s points with its own
+output, at the cost of exactly the density kinds present on each pair. `evaluate(f, st, targets; output=Gradient())` returns
 `∇u` as `SVector`s. Dual-number positions, densities and targets go through
 unchanged (directional and shape derivatives).
 

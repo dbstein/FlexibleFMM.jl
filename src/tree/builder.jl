@@ -432,7 +432,15 @@ function flatten(levels::Vector{LevelBuilder{D}}, perm::Vector{Int}, origin::SVe
                                      colleagues, ghost, has_source, far_index)
     return Tree{D,T}(origin, W0, level_range, cell, level, parent, child_first, points,
                      leaf, ghost, xlist, has_source, colleagues, group_parent, ilists,
-                     perm, point_node, far_index)
+                     perm, point_node, far_index, [length(perm)], [points], [perm], [point_node])
+end
+# the same tree with the group tables of `sizes` groups
+function _with_groups(t::Tree{D,T}, sizes::Vector{Int}) where {D,T}
+    sum(sizes) == length(t.perm) || throw(DimensionMismatch("the groups do not add up to the points"))
+    gpoints, gperm, gpoint_node = _group_tables(t.level_range, t.child_first, t.points, t.perm, t.point_node, sizes, Val(D))
+    return Tree{D,T}(t.origin, t.W0, t.level_range, t.cell, t.level, t.parent, t.child_first, t.points,
+                     t.leaf, t.ghost, t.xlist, t.has_source, t.colleagues, t.group_parent, t.ilists,
+                     t.perm, t.point_node, t.far_index, sizes, gpoints, gperm, gpoint_node)
 end
 
 # one level of `flatten`, threaded over its nodes (leaves write disjoint point ranges)
@@ -486,3 +494,19 @@ function Tree(points::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox=nothin
     return flatten(levels, perm, origin, W0)
 end
 Tree(points::AbstractMatrix{T}; kwargs...) where {T} = Tree(as_svectors(Val(size(points, 1)), points); kwargs...)
+
+"""
+    Tree(groups::Tuple; ppl=50, bbox=nothing, max_levels=30)
+
+The tree of several groups of points (each a vector of `SVector`s or a `D × N`
+matrix), built on their concatenation, with the per-group tables (`gpoints`,
+`gperm`, `gpoint_node`): the groups carry different density types in one FMM.
+"""
+function Tree(groups::Tuple; kwargs...)
+    isempty(groups) && throw(ArgumentError("no groups"))
+    D = point_dimension(groups[1])
+    pts = [as_svectors(Val(D), g) for g in groups]
+    all(p -> eltype(p) == eltype(pts[1]), pts) || throw(ArgumentError("the groups must share one point type"))
+    t = Tree(vcat(pts...); kwargs...)
+    return _with_groups(t, [length(p) for p in pts])
+end

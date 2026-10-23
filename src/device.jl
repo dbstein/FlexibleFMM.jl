@@ -73,7 +73,8 @@ end
 The per-evaluation data: the locals, sorted sources and densities of a built state,
 moved with `to`.
 """
-device_state(state::FMMState, to=identity) = (locals=to(state.locals), sources=to(state.sources), τ=to(state.τ))
+device_state(state::FMMState, to=identity) = (ngroups(state) == 1 || throw(ArgumentError("the device passes take one group of sources for now"));
+                                              (locals=to(state.locals), sources=to(state.sources[1]), τ=to(state.τ[1])))
 
 @inline _load_col(L, k::Int, i::Int, n::Int, ::Val{1}) = @inbounds L[k, i]
 @inline _load_col(L, k::Int, i::Int, n::Int, ::Val{nc}) where {nc} = SVector(ntuple(a -> (@inbounds L[(a - 1) * n + k, i]), Val(nc)))

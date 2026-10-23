@@ -20,7 +20,7 @@ for (name, K, τ) in (("Laplace3D", Laplace3D(Float32), randn(rng, Float32, N)),
     ref = evaluate_at_sources(f, st)
     t_cpu = minimum(@elapsed(begin build_expansions!(st, f, pts, τ); evaluate_at_sources(f, st) end) for _ in 1:2)
     t_plan = @elapsed plan = DevicePlan(f, MtlArray; tol=tol, fast=fast)
-    ds = (sources=MtlArray(st.sources), τ=MtlArray(st.τ))
+    ds = (sources=MtlArray(st.sources[1]), τ=MtlArray(st.τ[1]))
     out = MtlArray{eltype(ref)}(undef, N)
     device_matvec!(out, plan, ds; sorted=true)
     t_dev = minimum(@elapsed(device_matvec!(out, plan, ds; sorted=true)) for _ in 1:3)

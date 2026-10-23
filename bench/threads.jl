@@ -88,7 +88,7 @@ pts = SVector{3,Float32}.(GENERATORS["sphere"](rng, N, Val(3)))
 m = StokesHarmonics(Stokeslet3D(Float32); p=6)
 fm = FMM(m, pts; ppl=ppl, bbox=(zero(eltype(pts)), 1f0))
 st = FMMState(fm, Float32, Float32, SVector{3,Float32})
-st.sources .= pts[fm.tree.perm]; st.τ .= τ[fm.tree.perm]
+st.sources[1] .= pts[fm.tree.perm]; st.τ[1] .= τ[fm.tree.perm]
 upward_pass!(st, fm); downward_pass!(st, fm); evaluate_at_sources(fm, st)
 t_up = minimum(@elapsed(upward_pass!(st, fm)) for _ in 1:3)
 t_down = minimum(@elapsed(downward_pass!(st, fm)) for _ in 1:3)

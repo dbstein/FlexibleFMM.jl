@@ -224,7 +224,7 @@ end
         node = f.s2m_nodes[end][1]
         r = f.tree.points[node]
         col = zeros(eltype(st.multipoles), expansion_length(m))
-        xs = view(st.sources, r); ts = view(st.τ, r); c = center(f.tree, node)
+        xs = view(st.sources[1], r); ts = view(st.τ[1], r); c = center(f.tree, node)
         s2m!(col, m, f.ops[end], xs, ts, c)
         @test @allocated(s2m!(col, m, f.ops[end], xs, ts, c)) == 0
         l2t(m, f.ops[end], col, P2(0.01, 0.02), Gradient())

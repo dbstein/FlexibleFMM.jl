@@ -19,7 +19,7 @@ rng = MersenneTwister(45)
     st = build_expansions(f, pts, τ)
     @test FlexibleFMM.nlevels(f) >= 5
     plan = DevicePlan(f)
-    ds = (sources=st.sources, τ=st.τ)
+    ds = (sources=st.sources[1], τ=st.τ[1])
     device_build_expansions!(plan, ds; sorted=true)
     @test mrd(vec(plan.multipoles), vec(st.multipoles)) < tol
     @test mrd(vec(plan.plocals), vec(st.plocals)) < tol
@@ -42,7 +42,7 @@ end
     st = build_expansions(f, pts, τ)
     plan = DevicePlan(f; tol=tol)
     @test !isempty(plan.M2Lb[3]) && all(size(B, 1) < size(B, 2) ÷ 2 for B in plan.M2Lb[3])   # ranks well below n
-    ds = (sources=st.sources, τ=st.τ)
+    ds = (sources=st.sources[1], τ=st.τ[1])
     u = similar(evaluate_at_sources(f, st))
     device_matvec!(u, plan, ds; sorted=true)
     @test mrd(u, evaluate_at_sources(f, st)) < errtol       # the compression sits below the method's accuracy
@@ -63,7 +63,7 @@ end
     plan = DevicePlan(f)
     @test length(plan.M2Lc[3]) == 40
     out = zeros(700)
-    device_matvec!(out, plan, (sources=st.sources, τ=st.τ); sorted=true)
+    device_matvec!(out, plan, (sources=st.sources[1], τ=st.τ[1]); sorted=true)
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
     fc = FMM(SquareKernelIndependent(Laplace2D(); p=8), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
     @test length(DevicePlan(fc).M2Lc[3]) == 7
@@ -74,7 +74,7 @@ end
     sty = build_expansions(fy, pts3, τ3)
     plany = DevicePlan(fy; tol=1e-5)
     outy = zeros(3000)
-    device_matvec!(outy, plany, (sources=sty.sources, τ=sty.τ); sorted=true)
+    device_matvec!(outy, plany, (sources=sty.sources[1], τ=sty.τ[1]); sorted=true)
     @test mrd(outy, evaluate_at_sources(fy, sty)) < 1e-4
     # complex densities with a real kernel: the plan's element type
     τc = randn(rngr, ComplexF64, 3000)
@@ -83,7 +83,7 @@ end
     planc = DevicePlan(fl; eltype=ComplexF64)
     @test eltype(planc.multipoles) == ComplexF64
     outc = zeros(ComplexF64, 3000)
-    device_matvec!(outc, planc, (sources=stc.sources, τ=stc.τ); sorted=true)
+    device_matvec!(outc, planc, (sources=stc.sources[1], τ=stc.τ[1]); sorted=true)
     @test mrd(outc, evaluate_at_sources(fl, stc)) < 1e-10
     @test_throws ArgumentError DevicePlan(fl; eltype=Float32)
 end
@@ -95,7 +95,7 @@ end
     f = FMM(CubeKernelIndependent{3}(Laplace3D(); p=6), pts; ppl=30, bbox=(P3(0, 0, 0), 1.0))
     st = build_expansions(f, pts, τ)
     plan = DevicePlan(f)
-    ds = (sources=st.sources, τ=st.τ)
+    ds = (sources=st.sources[1], τ=st.τ[1])
     device_build_expansions!(plan, ds; sorted=true)
     # the pseudo-inverse amplifies roundoff differences of the two paths (1e-10 relative
     # in the locals at this order); the fields agree
@@ -147,7 +147,7 @@ end
         # the matvec from inputs in the original order equals the one from the tree's order
         τ = randn(rng, length(pts))
         st = build_expansions(f, pts, τ)
-        u1 = device_matvec!(similar(τ), plan, (sources=st.sources, τ=st.τ); sorted=true)
+        u1 = device_matvec!(similar(τ), plan, (sources=st.sources[1], τ=st.τ[1]); sorted=true)
         u2 = device_matvec!(similar(τ), plan, (sources=pts, τ=τ))
         @test u1 == u2
         @test mrd(u2, evaluate_at_sources(f, st)) < 1e-10

@@ -24,7 +24,7 @@ rng = MersenneTwister(10)
         tree = f.tree
         s3 = similar(s1)
         for j in 1:N
-            s3[tree.perm[j]] = evaluate_target(f, st, st.sources[j], tree.point_node[j], j)
+            s3[tree.perm[j]] = evaluate_target(f, st, st.sources[1][j], tree.point_node[j], j)
         end
         @test s1 == s3
     end
@@ -45,7 +45,7 @@ end
         node = f.s2m_nodes[end][1]
         r = f.tree.points[node]
         col = zeros(eltype(st.multipoles), expansion_length(m))
-        xs = view(st.sources, r); ts = view(st.τ, r); c = center(f.tree, node)
+        xs = view(st.sources[1], r); ts = view(st.τ[1], r); c = center(f.tree, node)
         s2m!(col, m, f.ops[end], xs, ts, c)
         @test @allocated(s2m!(col, m, f.ops[end], xs, ts, c)) == 0
     end
