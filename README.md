@@ -155,7 +155,8 @@ cube method at equal accuracy, level on uniform data (`docs/harmonics.md`).
   slower than their cores allow
 - `bench/compare/` — timing and accuracy against the Flatiron libraries through
   FMM2D.jl and FMM3D.jl, in its own environment so they are not dependencies; the
-  same `kernel`, `method`, `dist`, `ppl` and `device` options as the benchmark plus
+  same `kernel`, `method`, `dist`, `ppl`, `device` and `tree` options as the
+  benchmark (`tree=device` is the default once a device is given) plus
   `eps` for the libraries (`julia --project=bench/compare -t auto
   bench/compare/compare.jl dim=3 N=100000 kernel=laplace,stokes method=cube:6,cube:8
   eps=1e-3,1e-6 device=metal`; the specifications are listed in `bench/common.jl`)

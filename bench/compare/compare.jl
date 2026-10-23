@@ -27,7 +27,15 @@
 # device=metal (Float32 by default) or device=cuda (Float64 by default; the
 # bench/cuda environment has CUDA.jl and the libraries), precision=float32|float64
 # sets ours (a card with weak Float64 wants float32); our rows are then the device
-# matvec (DevicePlan + device_matvec!) and the library rows stay on the CPU. Errors
+# matvec (DevicePlan + device_matvec!) and the library rows stay on the CPU.
+# tree=host|device (device whenever a device is given): with tree=device the tree
+# is built on the device inside the plan build (`DevicePlan(m, xs; …)`), the plan
+# column (steady state: one untimed build per size first, Metal's sortperm!
+# compiles per array size), with the tree column empty; with tree=host the tree is
+# built on the host (tree column) and uploaded, the lists built on the device
+# (`DevicePlan(f, dev)`, plan column). The first column is the first matvec of a
+# fresh plan or state, and total = tree + plan + matvec, everything a new point
+# set costs, as the library's call is. Errors
 # are relative max errors at nerr=2000 of the sources against the Float64 direct
 # sum over all sources, on the points and densities rounded to ours' precision,
 # which the libraries get as well: every row is measured on the same problem, and
@@ -54,6 +62,10 @@ elseif device == "cuda"
     using CUDA
 end
 to = device == "metal" ? MtlArray : device == "cuda" ? CuArray : device == "ka_cpu" ? identity : nothing
+tree = get(args, "tree", device == "cpu" ? "host" : "device")
+tree in ("host", "device") || error("tree must be host or device")
+devtree = tree == "device"
+devtree && device == "cpu" && error("tree=device needs a device (device=metal, cuda or ka_cpu)")
 precision = get(args, "precision", device == "metal" ? "float32" : "float64")
 precision in ("float32", "float64") || error("precision must be float32 or float64")
 TP = precision == "float32" ? Float32 : Float64         # our precision (the libraries run in Float64)
@@ -75,24 +87,31 @@ cvt64(x::SVector) = SVector{dim,Float64}(x)
 cvt64(x::Stresslet) = Stresslet(cvt64(x.f), cvt64(x.ν))
 round_trip(τ::AbstractVector) = TP === Float64 ? τ : map(cvt64, map(cvt, τ))
 
-# ---- ours: tree / first application / warm matvec ----
+# ---- ours: tree / plan / first application / warm matvec ----
 # A small warm-up compiles everything (the device path too); the tree is built
 # twice (the first builds the operators into the cache), the first application of
 # a fresh state is timed on its own (on the CPU it creates the method's workspaces;
-# on a device it is the plan build and the first device matvec), and the matvec is
-# the best of three warm repetitions. With a device no CPU pass runs.
+# on a device it is the first matvec of the plan, built before and timed as the
+# plan: the host tree's upload and lists, or with tree=device the device tree and
+# the lists), and the matvec is the best of three warm repetitions. With a device
+# no CPU pass runs.
 function run_ours(m, τ, ptsT; dev=to)
     nw = min(length(ptsT), max(2000, 100 * ppl))   # a warm-up tree with far-field interactions (compiles the whole matvec)
-    fw = FMM(m, ptsT[1:nw]; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)))
+    box = (zero(eltype(ptsT)), one(TP))
+    fw = FMM(m, ptsT[1:nw]; ppl=ppl, bbox=box)
     sw = build_expansions(fw, ptsT[1:nw], τ[1:nw]); evaluate_at_sources(fw, sw)
     if dev !== nothing
-        pw = DevicePlan(fw, dev)
+        pw = devtree ? DevicePlan(m, dev(ptsT[1:nw]); ppl=ppl, bbox=box, cache=fw.cache) : DevicePlan(fw, dev)
         device_matvec!(dev(similar(evaluate_at_sources(fw, sw))), pw, (sources=dev(ptsT[1:nw]), τ=dev(τ[1:nw])))
     end
     cache = OperatorCache(m)            # operators are built once per kernel and order and reused
-    f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
-    t_tree = @elapsed f = FMM(m, ptsT; ppl=ppl, bbox=(zero(eltype(ptsT)), one(TP)), cache=cache)
-    local out
+    local out, t_tree, t_plan, t_first, t_mv, nl, f
+    t_tree = t_plan = nothing
+    if dev === nothing || !devtree
+        f = FMM(m, ptsT; ppl=ppl, bbox=box, cache=cache)
+        t_tree = @elapsed f = FMM(m, ptsT; ppl=ppl, bbox=box, cache=cache)
+        nl = nlevels(f)
+    end
     if dev === nothing
         local st
         t_first = @elapsed (st = build_expansions(f, ptsT, τ); out = evaluate_at_sources(f, st))
@@ -101,11 +120,20 @@ function run_ours(m, τ, ptsT; dev=to)
         ds = (sources=dev(ptsT), τ=dev(τ))                  # original order: the plan gathers
         outd = dev(similar(τ, typeof(evaluate_at_sources(fw, sw)[1])))
         local plan
-        t_first = @elapsed (plan = DevicePlan(f, dev); device_matvec!(outd, plan, ds))
+        if devtree
+            # the tree on the device inside the plan build, once untimed at this size first
+            # (Metal's sortperm! compiles per array size), then the steady-state build
+            DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
+            t_plan = @elapsed plan = DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
+            nl = plan.nlevels
+        else
+            t_plan = @elapsed plan = DevicePlan(f, dev)     # the host tree uploaded, the lists on the device
+        end
+        t_first = @elapsed device_matvec!(outd, plan, ds)
         t_mv = minimum(@elapsed(device_matvec!(outd, plan, ds)) for _ in 1:3)
         out = Array(outd)
     end
-    return t_tree, t_first, t_mv, out, nlevels(f)
+    return t_tree, t_plan, t_first, t_mv, out, nl
 end
 # ---- library: one call evaluating at sources and targets, best of two ----
 function run_lib(call)
@@ -128,10 +156,10 @@ mat(v::AbstractVector{<:Number}) = reshape(v, 1, :)
 
 function report(name, rows)
     println("\n=== $name ===")
-    @printf "%-38s %10s %10s %10s %10s %9s\n" "code / parameter" "tree" "first" "matvec" "total" "error"
+    @printf "%-48s %8s %8s %8s %8s %8s %9s\n" "code / parameter" "tree" "plan" "first" "matvec" "total" "error"
     fmt(x) = x === nothing ? "" : @sprintf("%.3f", x)
     for r in rows
-        @printf "%-38s %10s %10s %10s %10.3f %9.1e\n" r[1] fmt(r[2]) fmt(r[3]) fmt(r[4]) r[5] r[6]
+        @printf "%-48s %8s %8s %8s %8s %8.3f %9.1e\n" r[1] fmt(r[2]) fmt(r[3]) fmt(r[4]) fmt(r[5]) r[6] r[7]
     end
 end
 
@@ -195,11 +223,12 @@ for dname in dists
             m === nothing && (println("  ($mname: not for this kernel)"); continue)
             devm = m isa Union{FlexibleFMM.AbstractKernelIndependent,FlexibleFMM.HarmonicMethod} ? dev : nothing   # the device passes
             r = run_ours(m, cvt(τ), ptsT; dev=devm)
-            push!(rows, ("ours $mname$(fast ? " fast" : "") ($(r[5]) levels$(devm === nothing ? "" : ", $device"))", r[1], r[2], r[3], r[1] + r[3], relerr(r[4][sub], uex)))
+            total = sum(x for x in (r[1], r[2], r[4]) if x !== nothing)      # tree + plan + matvec: a new point set's cost
+            push!(rows, ("ours $mname$(fast ? " fast" : "") ($(r[6]) levels$(devm === nothing ? "" : ", $device" * (devtree ? ", device tree" : "")))", r[1], r[2], r[3], r[4], total, relerr(r[5][sub], uex)))
         end
         for e in epss
             t, out = run_lib(lib_call(kind, k, e, S, τ))
-            push!(rows, ("$(libname(kind)) eps=$e", nothing, nothing, nothing, t, relerr(out[sub] ./ c, uex)))
+            push!(rows, ("$(libname(kind)) eps=$e", nothing, nothing, nothing, nothing, t, relerr(out[sub] ./ c, uex)))
         end
         report("$dim" * "D $kname, N = $N $dname", rows)
     end
