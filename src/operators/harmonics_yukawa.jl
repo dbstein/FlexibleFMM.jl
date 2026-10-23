@@ -223,12 +223,37 @@ end
 # A dipole adds the radial derivative: d·∇(u_n(κ̂r) Υ̃) = u_n d·∇Υ̃ + Υ̃ κ̂² u_{n+1} (d·x̂)/(2n+3),
 # from u_n'(z) = z u_{n+1}(z)/(2n+3); the gradient of a local has the same two terms.
 
-# u_0..u_nmax as an immutable vector, so that the weight functors are isbits and the
-# bodies stay allocation-free
+# u_0..u_nmax (nmax ≤ 63) as an immutable vector, so that the weight functors are
+# isbits and the bodies stay allocation-free: the same recurrence as `_yukawa_u!`,
+# operation for operation, with its stored part unrolled over the 64 slots (slot n
+# is written when n ≤ nmax, zero otherwise). No mutable workspace: an `MVector`
+# escapes to the heap, 544 bytes per point, whenever bounds checks are forced
+# (`--check-bounds=yes`, as under `Pkg.test`), since its error paths capture it.
+# The slots above nmax cost a predicated step each, 50 ns per point at p = 16 on
+# the M3 (138 against 85 ns with the workspace), under 2% of a matvec.
 @inline function _radial_weights(z2, nmax::Int)
-    u = MVector{64,typeof(z2)}(undef)
-    _yukawa_u!(u, z2, nmax)
-    return SVector(u)
+    nmax < 64 || throw(ArgumentError("Yukawa harmonics: p + 1 must be below 64"))
+    if _yk_value(z2) < 1e-8                                    # the series' first two terms
+        return SVector(ntuple(i -> i - 1 <= nmax ? 1 + z2 / (2 * (2(i - 1) + 3)) : zero(z2), Val(64)))
+    end
+    z = sqrt(z2)
+    N = max(nmax, ceil(Int, _yk_value(z))) + 25
+    a = zero(z); b = one(z)                                    # u_{N+1}, u_N (unnormalised)
+    for n in N-1:-1:nmax+1
+        c = b + z2 * a / ((2n + 3) * (2n + 5))
+        a = b; b = c
+    end
+    Base.Cartesian.@nexprs 64 j -> begin                        # n = 64 - j, from 63 down to 0
+        if 64 - j <= nmax
+            c = b + z2 * a / ((2 * (64 - j) + 3) * (2 * (64 - j) + 5))
+            a = b; b = c
+            u_{65 - j} = c
+        else
+            u_{65 - j} = zero(z2)
+        end
+    end
+    s = (sinh(z) / z) / b
+    return SVector(Base.Cartesian.@ntuple 64 i -> u_i) * s
 end
 
 struct _DegreeWeight{V}

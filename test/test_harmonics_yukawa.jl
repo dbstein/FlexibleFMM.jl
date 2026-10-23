@@ -2,7 +2,7 @@
 # generating identity, the operators by projection on all 316 offsets (charges and
 # dipoles, two values of κw), M2M, L2L, convergence in p, allocation-free bodies, and
 # the FMM end to end (potential, gradient, dipoles, low rank, dual positions).
-using FlexibleFMM: SphericalHarmonics, _yukawa_u!, _yukawa_v!, _sphere_quadrature, level_operators, order,
+using FlexibleFMM: SphericalHarmonics, _yukawa_u!, _yukawa_v!, _radial_weights, _sphere_quadrature, level_operators, order,
     LowRankM2L, PermutedM2L, l2t, nlevels
 using SpecialFunctions: besseli, besselk
 
@@ -22,6 +22,19 @@ mixed3y(rng, K, n) = [(randn(rng), Dipole(randn(rng, P3))) for _ in 1:n]
             @test v[n+1] ≈ (2 / π) * z^(n + 1) * k_n / dfact(n) rtol = 1e-12
         end
     end
+    # the per-point immutable weights are the vector recurrence, bitwise, in both branches,
+    # through a dual and in Float32; zero above nmax
+    for z2 in (1e-12, 0.03^2, 0.7^2, 2.5^2, 9.0^2, 40.0^2), nmax in (0, 5, 20, 63)
+        u = zeros(nmax + 1); _yukawa_u!(u, z2, nmax)
+        w = _radial_weights(z2, nmax)
+        @test w[1:nmax+1] == u && all(iszero, w[nmax+2:end])
+    end
+    @test_throws ArgumentError _radial_weights(1.0, 64)
+    z2d = ForwardDiff.Dual(0.7^2, 1.0)
+    ud = zeros(typeof(z2d), 21); _yukawa_u!(ud, z2d, 20)
+    @test _radial_weights(z2d, 20)[1:21] == ud
+    uf = zeros(Float32, 21); _yukawa_u!(uf, 0.49f0, 20)
+    @test _radial_weights(0.49f0, 20)[1:21] == uf
     # the generating identity e^{−κr}/r = Σ_n u_n(κ r_<) v_n(κ r_>) (2n+1) P_n(cos γ)... through the harmonics:
     # the expansion in regular × irregular real bases matches the kernel
     κ = 2.0; x = P3(0.6, -0.5, 0.8); y = P3(0.1, 0.2, -0.05)
