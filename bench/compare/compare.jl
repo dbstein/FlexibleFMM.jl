@@ -157,10 +157,11 @@ mat(v::AbstractVector{<:Number}) = reshape(v, 1, :)
 
 function report(name, rows)
     println("\n=== $name ===")
-    @printf "%-48s %8s %8s %8s %8s %8s %9s\n" "code / parameter" "tree" "plan" "first" "matvec" "total" "error"
+    w = max(48, maximum(length(r[1]) for r in rows))    # the label column fits the longest row
+    @printf "%-*s %8s %8s %8s %8s %8s %9s\n" w "code / parameter" "tree" "plan" "first" "matvec" "total" "error"
     fmt(x) = x === nothing ? "" : @sprintf("%.3f", x)
     for r in rows
-        @printf "%-48s %8s %8s %8s %8s %8.3f %9.1e\n" r[1] fmt(r[2]) fmt(r[3]) fmt(r[4]) fmt(r[5]) r[6] r[7]
+        @printf "%-*s %8s %8s %8s %8s %8.3f %9.1e\n" w r[1] fmt(r[2]) fmt(r[3]) fmt(r[4]) fmt(r[5]) r[6] r[7]
     end
 end
 
