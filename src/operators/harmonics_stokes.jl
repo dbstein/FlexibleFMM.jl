@@ -215,11 +215,10 @@ end
     return col
 end
 @inline function _stokes_accumulate!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, s)
-    for τi in τ
-        _stokes_accumulate!(col, N, ŷ, p, tb, τi, s)
-    end
-    return col
+    _stokes_accumulate!(col, N, ŷ, p, tb, first(τ), s)
+    return _stokes_accumulate!(col, N, ŷ, p, tb, Base.tail(τ), s)
 end
+@inline _stokes_accumulate!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, ::Tuple{}, s) = col
 
 function s2m!(col::AbstractVector, m::StokesHarmonics, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{3})
@@ -391,8 +390,7 @@ end
     return col
 end
 @inline function _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, s, m::Int)
-    for τi in τ
-        _stokes_accumulate_order!(col, N, ŷ, p, tb, τi, s, m)
-    end
-    return col
+    _stokes_accumulate_order!(col, N, ŷ, p, tb, first(τ), s, m)
+    return _stokes_accumulate_order!(col, N, ŷ, p, tb, Base.tail(τ), s, m)
 end
+@inline _stokes_accumulate_order!(col, N::Int, ŷ::SVector{3}, p::Int, tb::HarmonicTables, ::Tuple{}, s, m::Int) = col

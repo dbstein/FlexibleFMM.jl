@@ -231,3 +231,23 @@ end
         @test @allocated(l2t(m, f.ops[end], col, P2(0.01, 0.02), Gradient())) == 0
     end
 end
+
+@testset "closed-form stresslet and doublet gradients equal ForwardDiff's" begin
+    using FlexibleFMM: source_field, target_field
+    K = Stokeslet3D()
+    worst = 0.0
+    for _ in 1:300
+        s, t = rand(rng, P3), rand(rng, P3)
+        for τ in (Stresslet(randn(rng, P3), normalize(randn(rng, P3))), Doublet(randn(rng, P3)), Rotlet(randn(rng, P3)))
+            a = target_field(K, s, t, τ, Gradient())
+            b = ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)
+            worst = max(worst, norm(a - b) / norm(b))
+        end
+    end
+    @test worst < 1e-12
+    τ = Stresslet(randn(rng, P3), normalize(randn(rng, P3)))
+    alloc(K, s, t, τ) = @allocated target_field(K, s, t, τ, Gradient())
+    s, t = rand(rng, P3), rand(rng, P3)
+    alloc(K, s, t, τ)
+    @test alloc(K, s, t, τ) == 0
+end

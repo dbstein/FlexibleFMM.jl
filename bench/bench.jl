@@ -103,6 +103,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         t_tree = @elapsed f = FMM(m, pts; ppl=ppl, bbox=box, cache=cache)
     end
     if to === nothing
+        perm = f.tree.perm
         st = FMMState(f, expansion_eltype(m, T, eltype(τ)), T, eltype(τ))
         st.sources .= pts[perm]; st.τ .= τ[perm]
         # the first application of a fresh state (it creates the method's workspaces, the

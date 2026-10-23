@@ -273,12 +273,13 @@ end
     end
     return col
 end
+# tuples by recursion (a loop over a tuple is a dynamic getfield, which the device
+# compilers reject in the S2M kernels)
 @inline function _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, w::F) where {F}
-    for τi in τ
-        _accumulate!(col, x̂, p, tb, τi, w)
-    end
-    return col
+    _accumulate!(col, x̂, p, tb, first(τ), w)
+    return _accumulate!(col, x̂, p, tb, Base.tail(τ), w)
 end
+@inline _accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, ::Tuple{}, w) = col
 
 # ---- the method ----
 
@@ -739,11 +740,10 @@ end
     return col
 end
 @inline function _accumulate_order!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, m::Int)
-    for τi in τ
-        _accumulate_order!(col, x̂, p, tb, τi, m)
-    end
-    return col
+    _accumulate_order!(col, x̂, p, tb, first(τ), m)
+    return _accumulate_order!(col, x̂, p, tb, Base.tail(τ), m)
 end
+@inline _accumulate_order!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, ::Tuple{}, m::Int) = col
 # zero the entries of order m of a column
 @inline function _zero_order!(col, p::Int, m::Int)
     @inbounds for n in m:p

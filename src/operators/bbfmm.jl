@@ -150,11 +150,10 @@ end
     return col
 end
 @inline function accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, τ::Tuple) where {P}
-    for τi in τ
-        accumulate_moments!(col, Val(P), x̂, scale, τi)
-    end
-    return col
+    accumulate_moments!(col, Val(P), x̂, scale, first(τ))
+    return accumulate_moments!(col, Val(P), x̂, scale, Base.tail(τ))
 end
+@inline accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, ::Tuple{}) where {P} = col
 # Stokes: vector moments, component major; a singularity that is a differential
 # operator applied to the Stokeslet contributes that operator applied to the basis.
 @inline function accumulate_moments!(col, ::Val{P}, x̂::SVector{2}, scale, f::SVector{2}) where {P}

@@ -216,18 +216,20 @@ end
 @policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    return (-(6 * K.c) * _dot(d, τ.f) * _dot(d, τ.ν) * ir^5) * d
+    ir2 = ir * ir
+    return (-(6 * K.c) * _dot(d, τ.f) * _dot(d, τ.ν) * (ir2 * ir2 * ir)) * d      # products, not ^5: Julia's float
+                                                                             # powers take a compensated path, 4x slower
 end
 @policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Doublet{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     g = τ.g
-    return (K.c * ir^3) * (g - (3 * _dot(d, g) * ir * ir) * d)
+    return (K.c * ir * ir * ir) * (g - (3 * _dot(d, g) * ir * ir) * d)
 end
 @policied @inline function source_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Rotlet3) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    return (K.c * ir^3) * cross(τ.ω, d)
+    return (K.c * ir * ir * ir) * cross(τ.ω, d)
 end
 
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, f::SVector{3}, ::Pressure) =
@@ -235,7 +237,7 @@ end
 @policied @inline function target_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Pressure) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    ir3 = ir^3
+    ir3 = ir * ir * ir
     return (4 * K.c) * (_dot(τ.f, τ.ν) * ir3 - 3 * _dot(d, τ.f) * _dot(d, τ.ν) * ir3 * ir * ir)
 end
 @inline target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Doublet{3},Rotlet3}, ::Pressure) =
@@ -247,10 +249,33 @@ end
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
     df = _dot(d, f)
-    b = K.c * ir^3
+    b = K.c * ir * ir * ir
     I3 = one(SMatrix{3,3,typeof(b)})
     return b * (df * I3 + d * transpose(f) - f * transpose(d)) - (3b * df * ir * ir) * (d * transpose(d))
 end
-@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Union{Stresslet{3},Doublet{3},Rotlet3}, ::Gradient)
+# ∂u/∂t of the stresslet u = -6c d (d·f)(d·ν) r⁻⁵ and the doublet u = c (g r⁻³ − 3 d (d·g) r⁻⁵),
+# in closed form (ForwardDiff through the velocity costs 4–5× as much; it remains
+# the test oracle and serves the rotlet)
+@policied @inline function target_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Stresslet{3}, ::Gradient) where {T}
+    d = t - s
+    ir = _rinv(policy(K), _sqnorm(d))
+    ir2 = ir * ir
+    df = _dot(d, τ.f)
+    dν = _dot(d, τ.ν)
+    c6 = 6 * K.c * (ir2 * ir2 * ir)
+    I3 = one(SMatrix{3,3,typeof(c6)})
+    return -c6 * (df * dν * I3 + dν * (d * transpose(τ.f)) + df * (d * transpose(τ.ν))) + (5 * c6 * ir2 * df * dν) * (d * transpose(d))
+end
+@policied @inline function target_field(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}, τ::Doublet{3}, ::Gradient) where {T}
+    d = t - s
+    ir = _rinv(policy(K), _sqnorm(d))
+    ir2 = ir * ir
+    g = τ.g
+    dg = _dot(d, g)
+    c3 = 3 * K.c * (ir2 * ir2 * ir)
+    I3 = one(SMatrix{3,3,typeof(c3)})
+    return -c3 * (g * transpose(d) + dg * I3 + d * transpose(g)) + (5 * c3 * ir2 * dg) * (d * transpose(d))
+end
+@inline function target_field(K::Stokeslet3D, s::SVector{3}, t::SVector{3}, τ::Rotlet3, ::Gradient)
     return ForwardDiff.jacobian(tt -> source_field(K, s, tt, τ), t)
 end

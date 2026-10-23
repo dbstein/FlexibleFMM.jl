@@ -88,3 +88,15 @@ end
     @test mrd(outc, evaluate_at_sources(fc, stc)) < 1e-11
     @test_throws ArgumentError DevicePlan(FMM(BlackBox(Laplace2D(); p=6), [rand(rng, SVector{2,Float64}) for _ in 1:500]; ppl=30))
 end
+
+@testset "tuple densities through the harmonic device S2M" begin
+    rng = MersenneTwister(45)
+    pts = mixed_points3(rng, 6000)
+    τ = [(randn(rng, P3), Doublet(randn(rng, P3))) for _ in 1:6000]
+    m = StokesHarmonics(Stokeslet3D(); p=8)
+    f = FMM(m, pts; ppl=40, bbox=(P3(0, 0, 0), 1.0))
+    st = build_expansions(f, pts, τ)
+    plan = DevicePlan(f)
+    u = device_matvec!(similar(evaluate_at_sources(f, st)), plan, (sources=pts, τ=τ))
+    @test mrd(u, evaluate_at_sources(f, st)) < 1e-9
+end

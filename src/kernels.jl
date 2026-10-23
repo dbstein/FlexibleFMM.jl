@@ -189,12 +189,12 @@ end
 @policied @inline function gradient_t(K::Laplace3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    return (-K.c * ir^3) * d
+    return (-K.c * ir * ir * ir) * d
 end
 @policied @inline function hessian_t(K::Laplace3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    a = K.c * ir^3
+    a = K.c * ir * ir * ir
     return (3 * a * ir * ir) * (d * transpose(d)) - a * one(SMatrix{3,3,typeof(a)})
 end
 homogeneity(::Laplace3D) = -1
@@ -267,7 +267,7 @@ end
 @policied @inline function pressure_kernel(K::Stokeslet3D{T,P}, s::SVector{3}, t::SVector{3}) where {T}
     d = t - s
     ir = _rinv(policy(K), _sqnorm(d))
-    return (2 * K.c * ir^3) * d
+    return (2 * K.c * ir * ir * ir) * d
 end
 homogeneity(::Stokeslet3D) = -1
 

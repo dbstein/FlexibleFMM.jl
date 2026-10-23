@@ -249,11 +249,10 @@ end
     return _accumulate!(col, x̂, p, tb, sum(d.d .* x̂), _RadialWeight(u, κ̂ * κ̂))
 end
 @inline function _yukawa_accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, τ::Tuple, u, κ̂)
-    for τi in τ
-        _yukawa_accumulate!(col, x̂, p, tb, τi, u, κ̂)
-    end
-    return col
+    _yukawa_accumulate!(col, x̂, p, tb, first(τ), u, κ̂)
+    return _yukawa_accumulate!(col, x̂, p, tb, Base.tail(τ), u, κ̂)
 end
+@inline _yukawa_accumulate!(col, x̂::SVector{3}, p::Int, tb::HarmonicTables, ::Tuple{}, u, κ̂) = col
 
 function s2m!(col::AbstractVector, m::SphericalHarmonics{<:Yukawa3D}, ops::LevelOperators, xs::AbstractVector,
               τs::AbstractVector, c::SVector{3})
