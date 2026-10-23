@@ -124,6 +124,7 @@ function run_ours(m, τ, ptsT; dev=to)
             # the tree on the device inside the plan build, once untimed at this size first
             # (Metal's sortperm! compiles per array size), then the steady-state build
             DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
+            GC.gc()                                         # release it: device buffers go with their finalizers
             t_plan = @elapsed plan = DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
             nl = plan.nlevels
         else

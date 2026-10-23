@@ -125,7 +125,7 @@ function run_case(label, m, pts, τ; ppl, to=nothing, nerr=500, K64=nothing, pts
         # a device tree is built once untimed at this size first: Metal's sortperm!
         # (MPSGraph) compiles per array size, a one-time cost per N, and the timed
         # build is then the steady state of a time-stepping loop
-        devtree && DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
+        devtree && (DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache); GC.gc())   # released before the timed build
         rp = @timed plan = devtree ? DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache, verbose=true) : DevicePlan(f, to; verbose=true)
         rf = @timed device_matvec!(outd, plan, ds)
         t_plan, t_first = rp.time, rf.time
