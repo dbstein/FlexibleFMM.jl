@@ -17,7 +17,10 @@
 # elsewhere: a card with weak Float64 wants precision=float32), for the
 # kernel-independent and harmonic methods; with a device the CPU passes do not run,
 # and the device matvec is checked against Float64 direct sums at nerr=500 of the
-# sources (nerr=0 skips the check); the plan build's stages are reported. Needs Metal.jl or CUDA.jl in the
+# sources (nerr=0 skips the check; in Float32 runs that error is the floor of
+# single-precision summation, 6e-4 at 10⁶ sphere points and 9e-4 at 10⁷, which a
+# Float32 direct sum hits as well, docs/framework.md: the FMM's own error shows in
+# Float64 runs); the plan build's stages are reported. Needs Metal.jl or CUDA.jl in the
 # environment: bench/gpu has Metal, bench/cuda has CUDA (instantiate it on the
 # machine), or add them to the default environment, on which the package
 # environment stacks. device=ka_cpu runs
