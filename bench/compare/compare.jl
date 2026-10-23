@@ -29,8 +29,10 @@
 # sets ours (a card with weak Float64 wants float32); our rows are then the device
 # matvec (DevicePlan + device_matvec!) and the library rows stay on the CPU. Errors
 # are relative max errors at nerr=2000 of the sources against the Float64 direct
-# sum over all sources, so Float32 rows show Float32 rounding. Helmholtz stays on
-# the CPU on Metal (no complex GEMM).
+# sum over all sources, on the points and densities rounded to ours' precision,
+# which the libraries get as well: every row is measured on the same problem, and
+# Float32 rows show the Float32 FMM's error, not the rounding of the inputs
+# (docs/framework.md). Helmholtz stays on the CPU on Metal (no complex GEMM).
 # device=ka_cpu runs the device passes on KernelAbstractions' CPU backend (Float64).
 using FlexibleFMM, FMM2D, FMM3D, StaticArrays, Random, Printf, LinearAlgebra
 using FlexibleFMM: nlevels
@@ -68,6 +70,10 @@ cvt(x::Number) = TP(x)
 cvt(x::SVector) = SVector{dim,TP}(x)
 cvt(x::Stresslet) = Stresslet(cvt(x.f), cvt(x.ν))
 cvt(τ::AbstractVector) = TP === Float64 ? τ : map(cvt, τ)
+cvt64(x::Number) = Float64(x)                            # back to Float64: the rounded inputs for the reference and the libraries
+cvt64(x::SVector) = SVector{dim,Float64}(x)
+cvt64(x::Stresslet) = Stresslet(cvt64(x.f), cvt64(x.ν))
+round_trip(τ::AbstractVector) = TP === Float64 ? τ : map(cvt64, map(cvt, τ))
 
 # ---- ours: tree / first application / warm matvec ----
 # A small warm-up compiles everything (the device path too); the tree is built
@@ -168,6 +174,7 @@ end
 for dname in dists
     pts = GENERATORS[dname](rng, N, Val(dim))
     ptsT = SVector{dim,TP}.(pts)
+    pts = SVector{dim,Float64}.(ptsT)                    # what ours sees, for the reference and the libraries
     S = mat(pts)
     nsm = 300; Ssm = mat(pts[1:nsm])
     sub = 1:min(N, nerr)
@@ -177,7 +184,7 @@ for dname in dists
         _, KT = parse_kernel(kspec, Val(dim), TP)                    # ours, in our precision
         fast && (KT = fastmath(KT))
         k = occursin(":", kspec) ? parse(Float64, split(kspec, ":")[2]) : 0.0
-        τ = density(rng, kind, K64, N, Val(dim))
+        τ = round_trip(density(rng, kind, K64, N, Val(dim)))
         uex = direct_subset(K64, pts, τ, sub)
         c = calibrate(lib_call(kind, k, 1e-12, Ssm, τ[1:nsm]), direct_self(K64, pts[1:nsm], τ[1:nsm]))
         println("$(libname(kind)) kernel / ours = $c")

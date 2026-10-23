@@ -307,13 +307,18 @@ for a group whose output is not wanted, and one output type per group.
   the same configuration) the device tree takes 5 ms at 10⁶ points, 36 ms at 10⁷
   and 0.74 s at 10⁸ (10 levels, 6 M nodes), the whole plan 77, 120 and 840 ms, and
   the matvec 24, 149 and 1480 ms (67 M points per second from 10⁷ up; 2 × 10⁸ points fit, 10⁹ do not); the host
-  tree there was 0.6–1.0 s at 10⁷. The bench's "vs direct" column in Float32 runs
-  (5.8e-4 at 10⁶, 8.6e-4 at 10⁷, 2e-3 at 10⁸ on sphere points) is the precision
-  floor of single-precision summation, not the FMM's error: a Float32 direct sum
-  of the same points against the Float64 reference gives 6.3e-4 and 8.6e-4 at 10⁶
-  and 10⁷ (N terms of either sign accumulated in Float32; the closest pairs are
-  2e-5 apart, far above the coordinate resolution), so the FMM sits at or below
-  the floor and its own error is visible only in Float64 runs. `device_build_expansions!` runs
+  tree there was 0.6–1.0 s at 10⁷. The bench scripts evaluate their Float64
+  reference on the inputs the run sees: the points and densities rounded to the
+  run's precision (a round trip through Float32 in Float32 runs). Against the
+  unrounded points a Float32 row shows about 1e-3 on sphere points whatever the
+  FMM does (1.1e-3 at 2 × 10⁵, 6e-4 at 10⁶, 9e-4 at 10⁷, which an earlier version of
+  this note took for a summation floor): among the targets checked there is a pair
+  2e-5 apart, the rounding of the coordinates is 3e-8, so that pair's displacement
+  is off by 1e-3 relative and so is the velocity there, which dominates the maximum
+  (a Float32 direct sum shows the same 1e-3 for the same reason). On the rounded
+  points the Float32 cube `p = 8` run at 2 × 10⁵ is at 1.2e-6 and a Float32 direct
+  sum at 1.5e-7, so the column shows the FMM's own Float32 error, floored by the
+  pseudo-inverse truncation at `50·eps`. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);

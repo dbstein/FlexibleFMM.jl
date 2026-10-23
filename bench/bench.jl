@@ -17,10 +17,11 @@
 # elsewhere: a card with weak Float64 wants precision=float32), for the
 # kernel-independent and harmonic methods; with a device the CPU passes do not run,
 # and the device matvec is checked against Float64 direct sums at nerr=500 of the
-# sources (nerr=0 skips the check; in Float32 runs that error is the floor of
-# single-precision summation, 6e-4 at 10⁶ sphere points and 9e-4 at 10⁷, which a
-# Float32 direct sum hits as well, docs/framework.md: the FMM's own error shows in
-# Float64 runs); the plan build's stages are reported. Needs Metal.jl or CUDA.jl in the
+# sources (nerr=0 skips the check; the reference takes the points and densities
+# rounded to the run's precision, what the run sees, so Float32 rows show the
+# FMM's Float32 error and not the 1e-3 that the rounding of one close pair's
+# coordinates adds against the unrounded points, docs/framework.md); the plan
+# build's stages are reported. Needs Metal.jl or CUDA.jl in the
 # environment: bench/gpu has Metal, bench/cuda has CUDA (instantiate it on the
 # machine), or add them to the default environment, on which the package
 # environment stacks. device=ka_cpu runs
@@ -147,8 +148,8 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores,
     println(config_line())
     println("cores assumed for the rates: ", cores, ", dimension: ", dim, ", precision: ", T, device == "cpu" ? "" : ", device: $device")
     for dname in dists
-        pts64 = GENERATORS[dname](rng, N, Val(dim))
-        pts = SVector{dim,T}.(pts64)
+        pts = SVector{dim,T}.(GENERATORS[dname](rng, N, Val(dim)))
+        pts64 = SVector{dim,Float64}.(pts)                   # the reference on the points the run sees
         for ppl in ppls, kspec in kernels, mspec in methods
             kname, K = parse_kernel(kspec, Val(dim), T)
             if fast
@@ -157,8 +158,8 @@ function main(dim, N, ppls, dists, kernels, methods, device, to, T, nerr, cores,
             _, K64 = parse_kernel(kspec, Val(dim), Float64)              # the reference: precise
             mname, m = parse_method(mspec, K, Val(dim))
             m === nothing && continue                            # a method not for this kernel
-            τ64 = density(rng, kernel_kind(kspec), K64, N, Val(dim))
-            τ = T === Float64 ? τ64 : map(x -> cvt(T, x), τ64)
+            τ = map(x -> cvt(T, x), density(rng, kernel_kind(kspec), K64, N, Val(dim)))
+            τ64 = T === Float64 ? τ : map(x -> cvt(Float64, x), τ)
             run_case("$kname $mname / $dname", m, pts, τ; ppl=ppl, to=to, nerr=nerr, K64=K64, pts64=pts64, τ64=τ64, cores=cores, devtree=devtree)
         end
     end
