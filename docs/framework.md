@@ -266,8 +266,14 @@ and `target_field` methods for the outputs it should support.
   `tree=device` option runs that path. On an RTX Blackwell (CUDA, 18 host threads,
   the same configuration) the device tree takes 5 ms at 10⁶ points, 36 ms at 10⁷
   and 0.74 s at 10⁸ (10 levels, 6 M nodes), the whole plan 77, 120 and 840 ms, and
-  the matvec 24, 149 and 1480 ms (67 M points per second from 10⁷ up; 2 × 10⁸ points
-  fit, 10⁹ do not); the host tree there was 0.6–1.0 s at 10⁷. `device_build_expansions!` runs
+  the matvec 24, 149 and 1480 ms (67 M points per second from 10⁷ up; 2 × 10⁸ points fit, 10⁹ do not); the host
+  tree there was 0.6–1.0 s at 10⁷. The bench's "vs direct" column in Float32 runs
+  (5.8e-4 at 10⁶, 8.6e-4 at 10⁷, 2e-3 at 10⁸ on sphere points) is the precision
+  floor of single-precision summation, not the FMM's error: a Float32 direct sum
+  of the same points against the Float64 reference gives 6.3e-4 and 8.6e-4 at 10⁶
+  and 10⁷ (N terms of either sign accumulated in Float32; the closest pairs are
+  2e-5 apart, far above the coordinate resolution), so the FMM sits at or below
+  the floor and its own error is visible only in Float64 runs. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);
