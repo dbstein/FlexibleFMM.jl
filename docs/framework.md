@@ -262,8 +262,12 @@ and `target_field` methods for the outputs it should support.
   1.8 s with the lists on the host, and the tree in 0.06 and 0.32 s on 12 threads;
   the matvec takes 0.11 and 0.91 s. With the tree built on the device as well
   (`DevicePlan(method, xs; ppl, bbox, cache)` from points on the device,
-  `docs/tree.md`), the plan is 0.14 and 0.31 s all in, nothing of the tree on the
-  host; the bench's `tree=device` option runs that path. `device_build_expansions!` runs
+  `docs/tree.md`), the plan is 0.14 and 0.31 s all in, nothing of the tree on the host; the bench's
+  `tree=device` option runs that path. On an RTX Blackwell (CUDA, 18 host threads,
+  the same configuration) the device tree takes 5 ms at 10⁶ points, 36 ms at 10⁷
+  and 0.74 s at 10⁸ (10 levels, 6 M nodes), the whole plan 77, 120 and 840 ms, and
+  the matvec 24, 149 and 1480 ms (67 M points per second from 10⁷ up; 2 × 10⁸ points
+  fit, 10⁹ do not); the host tree there was 0.6–1.0 s at 10⁷. `device_build_expansions!` runs
   the S2M kernel and the GEMMs upward, and downward the L2L GEMMs, per chunk a
   gather, a GEMM and a target-owned scatter, and the pseudo-inverse to the
   densities of the level's real leaves (gathered, transformed, scattered);
