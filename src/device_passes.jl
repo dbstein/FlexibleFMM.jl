@@ -77,7 +77,7 @@ function DeviceEvaluator(dt::DeviceTree{D,T}, m, ops::Vector, to; fast::Bool=fal
     centers = similar(dt.sources, SVector{D,T}, n)
     _centers!(get_backend(dt.level), 256)(centers, dt.cell, dt.level, dt.origin, dt.W0; ndrange=n)
     return DeviceEvaluator{D,typeof(K),typeof(dt.colleagues),typeof(dt.level),typeof(centers),typeof(far)}(
-        K, dt.colleagues, dt.plo, dt.phi, dt.level, centers, far, dt.point_node, dt.perm)
+        K, dt.colleagues, dt.level, centers, far, dt.gplo, dt.gphi, dt.gpoint_node, dt.gperm)
 end
 DeviceEvaluator(f::FMM, to=identity; fast::Bool=false) = DeviceEvaluator(DeviceTree(f.tree, to), f.method, f.ops, to; fast=fast)
 
@@ -87,7 +87,6 @@ _mover(xs::AbstractArray) = typeof(xs).name.wrapper
 
 function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(f.method),
                     verbose::Bool=false) where {D,T}
-    ngroups(f.tree) == 1 || throw(ArgumentError("the device passes take one group of sources for now"))
     dt = DeviceTree(f.tree, to)
     return _device_plan(dt, f.method, f.ops, [to(Int32.(f.s2m_nodes[l])) for l in 1:nlevels(dt)],
                         [to(Int32.(f.leaf_nodes[l])) for l in 1:nlevels(dt)], to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)
@@ -95,24 +94,30 @@ end
 
 """
     DevicePlan(method, xs; ppl=50, bbox, cache=OperatorCache(method), max_levels=30, tol=0, fast=false, eltype, verbose=false)
+    DevicePlan(method, groups::Tuple; …)
 
-The plan from points on the device (`xs` a `CuArray`/`MtlArray` of `SVector`s;
+The plan from points on the device (`xs` a `CuArray`/`MtlArray` of `SVector`s, or a
+tuple of them, one per group of sources with its own density type;
 `Array`s run on KernelAbstractions' CPU backend): the tree built there
 (`device_tree`), the operators of its levels from `cache` (the root box `bbox =
 (origin, width)` snapped to a width the cache knows), the node lists by compaction,
 the lists and the chunks as in the plan of a host FMM. Nothing of the tree touches
 the host but the level counts.
 """
-function DevicePlan(m::AbstractMethod, xs::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox, cache::OperatorCache=OperatorCache(m),
-                    max_levels::Integer=30, tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
+DevicePlan(m::AbstractMethod, xs::AbstractVector{<:SVector}; kwargs...) = DevicePlan(m, (xs,); kwargs...)
+function DevicePlan(m::AbstractMethod, groups::Tuple{Vararg{AbstractVector{SVector{D,T}}}}; ppl::Integer=50, bbox,
+                    cache::OperatorCache=OperatorCache(m), max_levels::Integer=30, tol::Real=0, fast::Bool=false,
+                    eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
     cache.method === m || throw(ArgumentError("the cache was built for a different method"))
     D == dimension(m) || throw(ArgumentError("$(D)-dimensional points with a $(dimension(m))-dimensional method"))
+    isempty(groups) && throw(ArgumentError("no groups"))
+    xs = length(groups) == 1 ? groups[1] : vcat(groups...)
     to = _mover(xs)
     t_tree = @elapsed begin
         lo = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], min, xs), Val(D)))
         hi = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], max, xs), Val(D)))
         origin, W0, e0 = fit_box!(cache, lo, hi, bbox)
-        dt = device_tree(xs; ppl=ppl, bbox=(origin, W0), max_levels=max_levels)
+        dt = device_tree(xs; ppl=ppl, bbox=(origin, W0), max_levels=max_levels, group_sizes=[length(g) for g in groups])
         L = nlevels(dt)
         ops = [get_operators!(cache, e0 + 1 - l) for l in 1:L]
         s2m_flag = map((c, h) -> Int32(c == 0 && h != 0), dt.child_first, dt.has_source)
@@ -301,8 +306,8 @@ end
 # multipoles of the childless nodes of the harmonic methods: one work-item per node
 # and order m, the order's chain of harmonics.jl on the node's sources (the chains
 # of different orders are independent and write disjoint entries)
-@kernel function _s2m_harmonic_kernel!(M, @Const(nodes), @Const(centers), @Const(level), far, @Const(plo), @Const(phi),
-                                       @Const(sources), @Const(τ), ::Val{nb}) where {nb}
+@kernel function _s2m_harmonic_kernel!(M, @Const(nodes), @Const(centers), @Const(level), far, @Const(gplo), @Const(gphi),
+                                       sources, τ, ::Val{nb}) where {nb}
     g = @index(Global, Linear)
     @inbounds begin
         p = far.p
@@ -316,19 +321,28 @@ end
         for a in 1:nb
             _zero_order!(_block(col, N, a), p, m)
         end
-        for j in Int(plo[node]):Int(phi[node])
-            _device_accumulate!(col, (sources[j] - c) * s, p, far.tb, τ[j], s, m, Val(nb))
-        end
+        _s2m_harmonic_groups!(col, sources, τ, gplo, gphi, node, c, s, p, far.tb, m, Val(nb), 1)
     end
 end
+@inline function _s2m_harmonic_groups!(col, sources::Tuple, τ::Tuple, gplo, gphi, node, c, s, p, tb, m, ::Val{nb}, g::Int) where {nb}
+    τg = first(τ)
+    if τg !== nothing
+        xs = first(sources)
+        @inbounds for j in Int(gplo[g, node]):Int(gphi[g, node])
+            _device_accumulate!(col, (xs[j] - c) * s, p, tb, τg[j], s, m, Val(nb))
+        end
+    end
+    return _s2m_harmonic_groups!(col, Base.tail(sources), Base.tail(τ), gplo, gphi, node, c, s, p, tb, m, Val(nb), g + 1)
+end
+@inline _s2m_harmonic_groups!(col, ::Tuple{}, ::Tuple{}, gplo, gphi, node, c, s, p, tb, m, ::Val{nb}, g::Int) where {nb} = col
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{1}) = _accumulate_order!(col, ŷ, p, tb, _scaled_density(τ, s), m)
 @inline _device_accumulate!(col, ŷ, p, tb, τ, s, m, ::Val{4}) = _stokes_accumulate_order!(col, (p + 1)^2, ŷ, p, tb, τ, s, m)
 
 # ---- kernels ----
 
 # check data of the childless nodes: one work-item per (node, check point)
-@kernel function _s2m_kernel!(pM, @Const(nodes), @Const(centers), @Const(ysoa), lvl, @Const(plo), @Const(phi),
-                              @Const(sources), @Const(τ), K, ::Val{D}, ::Val{nc}) where {D,nc}
+@kernel function _s2m_kernel!(pM, @Const(nodes), @Const(centers), @Const(ysoa), lvl, @Const(gplo), @Const(gphi),
+                              sources, τ, K, ::Val{D}, ::Val{nc}) where {D,nc}
     g = @index(Global, Linear)
     @inbounds begin
         N = size(ysoa, 1)
@@ -337,13 +351,22 @@ end
         node = Int(nodes[q])
         c = centers[node]
         y = SVector(ntuple(d -> ysoa[k, d, lvl], Val(D)))
-        acc = _field_zero(eltype(pM), Val(nc))
-        for j in Int(plo[node]):Int(phi[node])
-            acc += source_field(K, sources[j] - c, y, τ[j])
-        end
+        acc = _s2m_groups_device(K, sources, τ, gplo, gphi, node, c, y, _field_zero(eltype(pM), Val(nc)), 1)
         _store!(view(pM, :, q), k, N, acc)
     end
 end
+# the check potential of one point over the groups of a node (tuples, unrolled by recursion)
+@inline function _s2m_groups_device(K, sources::Tuple, τ::Tuple, gplo, gphi, node, c, y, acc, g::Int)
+    τg = first(τ)
+    if τg !== nothing
+        xs = first(sources)
+        @inbounds for j in Int(gplo[g, node]):Int(gphi[g, node])
+            acc += source_field(K, xs[j] - c, y, τg[j])
+        end
+    end
+    return _s2m_groups_device(K, Base.tail(sources), Base.tail(τ), gplo, gphi, node, c, y, acc, g + 1)
+end
+@inline _s2m_groups_device(K, ::Tuple{}, ::Tuple{}, gplo, gphi, node, c, y, acc, g::Int) = acc
 # columns of `src` (scaled) into the columns `cols` (global node indices) of `dst`
 @kernel function _scatter_cols!(dst, @Const(src), @Const(cols), α)
     g = @index(Global, Linear)
@@ -433,7 +456,7 @@ The upward and downward passes on the device from the device state `ds`
 `plan.locals`, the last of which the evaluation kernel reads.
 """
 function device_build_expansions!(plan::DevicePlan{D}, ds; sorted::Bool=false) where {D}
-    ds = sorted ? ds : _sorted_inputs(plan, ds)
+    ds = sorted ? (sources=_group_tuple(ds.sources), τ=_group_tuple(ds.τ)) : _sorted_inputs(plan, ds)
     dev = plan.dev
     backend = get_backend(plan.multipoles)
     K = dev.kernel
@@ -450,11 +473,11 @@ function device_build_expansions!(plan::DevicePlan{D}, ds; sorted::Bool=false) w
             if plan.pinv
                 pM = plan.pM[l]
                 ysoa = dev.far.ysoa
-                _s2m_kernel!(backend, 256)(pM, plan.s2m_nodes[l], dev.centers, ysoa, l, dev.plo, dev.phi,
+                _s2m_kernel!(backend, 256)(pM, plan.s2m_nodes[l], dev.centers, ysoa, l, dev.gplo, dev.gphi,
                                            ds.sources, ds.τ, K, Val(D), Val(nc); ndrange=nq * size(ysoa, 1))
                 _pinv_apply!(plan.Mup[l], plan.Uh_up[l], plan.invS_up[l], plan.V_up[l], pM, plan.tup[l], plan.pinv_scale[l])
             else
-                _s2m_harmonic_kernel!(backend, 256)(plan.Mup[l], plan.s2m_nodes[l], dev.centers, dev.level, dev.far, dev.plo, dev.phi,
+                _s2m_harmonic_kernel!(backend, 256)(plan.Mup[l], plan.s2m_nodes[l], dev.centers, dev.level, dev.far, dev.gplo, dev.gphi,
                                                     ds.sources, ds.τ, Val(plan.nb); ndrange=nq * (dev.far.p + 1))
             end
             _scatter_cols!(backend, 256)(Mp, plan.Mup[l], plan.s2m_nodes[l], one(eltype(Mp)); ndrange=Nm * nq)
@@ -540,25 +563,49 @@ Expansions on the device and the self evaluation at the sources, `out` in the
 original order.
 """
 function device_matvec!(out::AbstractVector, plan::DevicePlan, ds; output=Potential(), sorted::Bool=false)
-    ds = sorted ? ds : _sorted_inputs(plan, ds)
+    ngroups(plan.dev) == 1 || throw(ArgumentError("several groups: pass one output vector per group (a tuple)"))
+    return device_matvec!((out,), plan, ds; outputs=(output,), sorted=sorted)[1]
+end
+"""
+    device_matvec!(outs::Tuple, plan, ds; outputs=(Potential(), …), sorted=false)
+
+With groups: `ds = (sources=(xs₁, …), τ=(τ₁, …))` (a group with `nothing` densities
+is targets only), one output array per group (`nothing` for a group whose output
+is not wanted), one output type per group.
+"""
+function device_matvec!(outs::Tuple, plan::DevicePlan, ds; outputs::Tuple=ntuple(_ -> Potential(), length(outs)), sorted::Bool=false)
+    G = ngroups(plan.dev)
+    length(outs) == G == length(outputs) || throw(DimensionMismatch("expected $G outputs"))
+    ds = sorted ? (sources=_group_tuple(ds.sources), τ=_group_tuple(ds.τ)) : _sorted_inputs(plan, ds)
     device_build_expansions!(plan, ds; sorted=true)
-    return evaluate_at_sources!(out, plan.dev, (locals=plan.locals, sources=ds.sources, τ=ds.τ); output=output)
+    dsl = (locals=plan.locals, sources=ds.sources, τ=ds.τ)
+    for g in 1:G
+        outs[g] === nothing || evaluate_at_sources!(outs[g], plan.dev, dsl, g; output=outputs[g])
+    end
+    return outs
 end
 # the sources and densities gathered into the tree's order by `perm`, into buffers
 # the plan keeps per element type (`sorted=true` on the entry points takes inputs
 # already in that order, as `device_state` provides them)
 function _sorted_inputs(plan::DevicePlan, ds)
-    sources = _gather_input!(plan, :sources, ds.sources)
-    τ = _gather_input!(plan, :τ, ds.τ)
+    srcs = _group_tuple(ds.sources)
+    τs = _group_tuple(ds.τ)
+    G = ngroups(plan.dev)
+    length(srcs) == G == length(τs) || throw(DimensionMismatch("expected $G groups of sources and densities"))
+    sources = ntuple(g -> _gather_input!(plan, :sources, g, srcs[g]), G)
+    τ = ntuple(g -> _gather_input!(plan, :τ, g, τs[g]), G)
     return (sources=sources, τ=τ)
 end
-function _gather_input!(plan::DevicePlan, name::Symbol, x)
-    key = (name, typeof(x))
+_gather_input!(plan::DevicePlan, name::Symbol, g::Int, ::Nothing) = nothing
+function _gather_input!(plan::DevicePlan, name::Symbol, g::Int, x)
+    perm = plan.dev.gperm[g]
+    length(x) == length(perm) || throw(DimensionMismatch("expected $(length(perm)) entries in group $g"))
+    key = (name, g, typeof(x))
     buf = get(plan.scratch, key, nothing)
     if buf === nothing || length(buf) != length(x)
         buf = similar(x)
         plan.scratch[key] = buf
     end
-    _gather_perm!(get_backend(buf), 256)(buf, x, plan.dev.perm; ndrange=length(x))
+    _gather_perm!(get_backend(buf), 256)(buf, x, perm; ndrange=length(x))
     return buf
 end

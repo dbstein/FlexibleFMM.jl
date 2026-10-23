@@ -226,8 +226,16 @@ carrying every kind, zero-padded, costs 2.2× on velocities and 6–10× once ev
 target also computes the gradient and pressure a few need; separate FMMs per kind
 on their own trees cost 4× the ideal near field, because a small kind's tree is
 coarse and the other kinds' targets sum whole colleague ranges of it; a tagged
-density per element runs scalar at 1.6–1.9×. The device passes take one group for
-now.
+density per element runs scalar at 1.6–1.9×. The device passes take the same
+groups: the device tree takes `group_sizes` and builds the per-group tables from
+its `perm` (a flag kernel per group, the package scan, a range kernel reading the
+scanned flags at each node's bounds), `DevicePlan(method, groups::Tuple; …)` builds
+it from device points, the evaluator carries the group tables, and the S2M and
+evaluation kernels take the tuple of sources and the tuple of densities as
+arguments (`nothing` for a target-only group) and recurse over them, so every
+kernel body is again the typed one-group loop. `device_matvec!(outs::Tuple, plan,
+(sources=(…), τ=(…)); outputs=(…))` takes one output array per group, `nothing`
+for a group whose output is not wanted, and one output type per group.
 
 ## Where extensions plug in
 

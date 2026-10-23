@@ -129,8 +129,13 @@ interaction lists and the point set of every leaf are identical to the host
 tree's, which `test/test_device_tree.jl` asserts; only the order of the points
 within a leaf differs (the full key here, the input order there). The result is a
 `DeviceTree` (the fields of `Tree` as `Int32`/`UInt8` device arrays plus the sorted
-points); `Tree(dt)` downloads one. `DevicePlan(method, xs; …)` builds the plan
-from it with nothing of the tree on the host: 10⁷ sphere points on the M3 Max's
+points); `Tree(dt)` downloads one. `device_tree(…; group_sizes)` adds the group
+tables of the section above from the device `perm`: per group a flag kernel over
+the sorted points, the package's scan, a range kernel that reads the scanned flags
+at each node's bounds, and a compaction for `gperm` and `gpoint_node`; the ranges
+equal the host's, the order within a leaf differs as it does for `perm`.
+`DevicePlan(method, xs; …)` builds the plan from it with nothing of the tree on
+the host: 10⁷ sphere points on the M3 Max's
 GPU in 0.17 s (0.044 s at 10⁶), the whole plan in 0.31 s, against a 0.91 s matvec
 there. Metal's `sortperm!` goes through MPSGraph and compiles per array size, a
 one-time cost per N (about 1 s); CUDA's does not.

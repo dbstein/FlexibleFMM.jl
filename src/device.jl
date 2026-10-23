@@ -22,14 +22,15 @@ kernel's own policy otherwise). `to` maps a CPU array to the device's array type
 struct DeviceEvaluator{D,K,AI,VI,VP,F}
     kernel::K
     colleagues::AI        # 3^D × nnodes, Int32
-    plo::VI               # first and last source (sorted order) of each node, Int32
-    phi::VI
     level::VI
     centers::VP           # SVector{D,T} per node
     far::F                # DeviceSurface or DeviceHarmonic
-    point_node::VI        # leaf of each source (sorted order)
-    perm::VI              # original index of each sorted source
+    gplo::AI              # per group and node: its points' range in the group's numbering, Int32
+    gphi::AI
+    gpoint_node::Vector{VI}   # per group: the leaf of each group-local sorted point
+    gperm::Vector{VI}         # per group: the original index within the group of each sorted point
 end
+ngroups(dev::DeviceEvaluator) = length(dev.gperm)
 
 # the far-field data per method, passed to the kernels as one argument (adapted
 # to device arrays field by field)
@@ -73,15 +74,34 @@ end
 The per-evaluation data: the locals, sorted sources and densities of a built state,
 moved with `to`.
 """
-device_state(state::FMMState, to=identity) = (ngroups(state) == 1 || throw(ArgumentError("the device passes take one group of sources for now"));
-                                              (locals=to(state.locals), sources=to(state.sources[1]), τ=to(state.τ[1])))
+device_state(state::FMMState, to=identity) =
+    (locals=to(state.locals), sources=Tuple(map(to, state.sources)), τ=map(x -> x === nothing ? nothing : to(x), state.τ))
+# the inputs of a device evaluation as tuples of per-group arrays (one group: plain arrays accepted)
+_group_tuple(x::Tuple) = x
+_group_tuple(x) = (x,)
 
 @inline _load_col(L, k::Int, i::Int, n::Int, ::Val{1}) = @inbounds L[k, i]
 @inline _load_col(L, k::Int, i::Int, n::Int, ::Val{nc}) where {nc} = SVector(ntuple(a -> (@inbounds L[(a - 1) * n + k, i]), Val(nc)))
 
+# the near field of one colleague over the groups (tuples of per-group arrays,
+# unrolled by recursion; `nothing` densities: no sources); the self term is excluded
+# in the target's own group `sg` only
+@inline function _device_near(K, sources::Tuple, τ::Tuple, gplo, gphi, node, x, sg, skip, acc, output, g::Int)
+    τg = first(τ)
+    if τg !== nothing
+        xs = first(sources)
+        @inbounds for j in Int(gplo[g, node]):Int(gphi[g, node])
+            (g == sg && j == skip) && continue
+            acc += target_field(K, xs[j], x, τg[j], output)
+        end
+    end
+    return _device_near(K, Base.tail(sources), Base.tail(τ), gplo, gphi, node, x, sg, skip, acc, output, g + 1)
+end
+@inline _device_near(K, ::Tuple{}, ::Tuple{}, gplo, gphi, node, x, sg, skip, acc, output, g::Int) = acc
+
 @kernel function _evaluate_kernel!(out, @Const(oidx), @Const(targets), @Const(tnode), @Const(tskip), @Const(locals),
-                                   @Const(ysoa), @Const(level), @Const(centers), @Const(colleagues), @Const(plo),
-                                   @Const(phi), @Const(sources), @Const(τ), K, output, ::Val{D}, ::Val{nc}) where {D,nc}
+                                   @Const(ysoa), @Const(level), @Const(centers), @Const(colleagues), @Const(gplo),
+                                   @Const(gphi), sources, τ, sg::Int32, K, output, ::Val{D}, ::Val{nc}) where {D,nc}
     q = @index(Global, Linear)
     @inbounds begin
         x = targets[q]
@@ -98,10 +118,7 @@ device_state(state::FMMState, to=identity) = (ngroups(state) == 1 || throw(Argum
         for c in 1:3^D
             node = Int(colleagues[c, i])
             node == 0 && continue
-            for j in Int(plo[node]):Int(phi[node])
-                j == skip && continue
-                acc += target_field(K, sources[j], x, τ[j], output)
-            end
+            acc = _device_near(K, sources, τ, gplo, gphi, node, x, Int(sg), skip, acc, output, 1)
         end
         out[oidx[q]] = acc
     end
@@ -123,42 +140,45 @@ function evaluate!(out::AbstractVector, dev::DeviceEvaluator{D}, ds, targets::Ab
     copyto!(ident, Int32.(1:nt))
     skip = similar(nodes)
     fill!(skip, Int32(0))
-    _launch!(backend, workgroupsize, out, ident, targets, nodes, skip, dev, ds, output)
+    _launch!(backend, workgroupsize, out, ident, targets, nodes, skip, 0, dev, ds, output)
     return out
 end
 
 """
-    evaluate_at_sources!(out, dev::DeviceEvaluator, ds; output=Potential(), workgroupsize=256)
+    evaluate_at_sources!(out, dev::DeviceEvaluator, ds, g=1; output=Potential(), workgroupsize=256)
 
-Device evaluation at the sources themselves (the `i = j` term skipped), `out` in
-the original order.
+`out[i]` = `output` at point `i` of group `g` (the group's original order) from all
+other sources of all groups, on the device.
 """
-function evaluate_at_sources!(out::AbstractVector, dev::DeviceEvaluator{D}, ds; output=Potential(), workgroupsize=256) where {D}
-    n = length(ds.sources)
-    length(out) == n || throw(DimensionMismatch("expected $n outputs"))
+function evaluate_at_sources!(out::AbstractVector, dev::DeviceEvaluator{D}, ds, g::Int=1; output=Potential(), workgroupsize=256) where {D}
+    1 <= g <= ngroups(dev) || throw(ArgumentError("group $g of $(ngroups(dev))"))
+    sources = _group_tuple(ds.sources)
+    n = length(sources[g])
+    length(out) == n || throw(DimensionMismatch("expected $n outputs for group $g"))
     backend = get_backend(out)
-    skip = similar(dev.perm)
+    skip = similar(dev.gperm[g])
     copyto!(skip, Int32.(1:n))
-    _launch!(backend, workgroupsize, out, dev.perm, ds.sources, dev.point_node, skip, dev, ds, output)
+    _launch!(backend, workgroupsize, out, dev.gperm[g], sources[g], dev.gpoint_node[g], skip, g, dev, ds, output)
     return out
 end
 
-function _launch!(backend, workgroupsize, out, oidx, targets, nodes, skip, dev::DeviceEvaluator{D}, ds, output) where {D}
-    _launch_far!(dev.far, backend, workgroupsize, out, oidx, targets, nodes, skip, dev, ds, output)
+function _launch!(backend, workgroupsize, out, oidx, targets, nodes, skip, sg::Int, dev::DeviceEvaluator{D}, ds, output) where {D}
+    dsg = (locals=ds.locals, sources=_group_tuple(ds.sources), τ=_group_tuple(ds.τ))
+    _launch_far!(dev.far, backend, workgroupsize, out, oidx, targets, nodes, skip, sg, dev, dsg, output)
     synchronize(backend)
     return out
 end
-function _launch_far!(far::DeviceSurface, backend, workgroupsize, out, oidx, targets, nodes, skip, dev::DeviceEvaluator{D}, ds, output) where {D}
+function _launch_far!(far::DeviceSurface, backend, workgroupsize, out, oidx, targets, nodes, skip, sg, dev::DeviceEvaluator{D}, ds, output) where {D}
     nc = ncomp(dev.kernel, Val(D))
     kern = _evaluate_kernel!(backend, workgroupsize)
-    kern(out, oidx, targets, nodes, skip, ds.locals, far.ysoa, dev.level, dev.centers, dev.colleagues, dev.plo, dev.phi,
-         ds.sources, ds.τ, dev.kernel, output, Val(D), Val(nc); ndrange=length(targets))
+    kern(out, oidx, targets, nodes, skip, ds.locals, far.ysoa, dev.level, dev.centers, dev.colleagues, dev.gplo, dev.gphi,
+         ds.sources, ds.τ, Int32(sg), dev.kernel, output, Val(D), Val(nc); ndrange=length(targets))
     return out
 end
-function _launch_far!(far::DeviceHarmonic, backend, workgroupsize, out, oidx, targets, nodes, skip, dev::DeviceEvaluator{3}, ds, output)
+function _launch_far!(far::DeviceHarmonic, backend, workgroupsize, out, oidx, targets, nodes, skip, sg, dev::DeviceEvaluator{3}, ds, output)
     kern = _evaluate_harmonic_kernel!(backend, workgroupsize)
-    kern(out, oidx, targets, nodes, skip, ds.locals, far, dev.level, dev.centers, dev.colleagues, dev.plo, dev.phi,
-         ds.sources, ds.τ, dev.kernel, output, Val(far.nb); ndrange=length(targets))
+    kern(out, oidx, targets, nodes, skip, ds.locals, far, dev.level, dev.centers, dev.colleagues, dev.gplo, dev.gphi,
+         ds.sources, ds.τ, Int32(sg), dev.kernel, output, Val(far.nb); ndrange=length(targets))
     return out
 end
 
@@ -167,8 +187,8 @@ end
 @inline _harmonic_far(L, x̂, s, p, tb, ::Gradient, ::Val{1}) = _harmonic_gradient(L, x̂, p, tb) * s
 @inline _harmonic_far(L, x̂, s, p, tb, output, ::Val{4}) = _stokes_output(L, (p + 1)^2, x̂, s, p, tb, output)
 @kernel function _evaluate_harmonic_kernel!(out, @Const(oidx), @Const(targets), @Const(tnode), @Const(tskip), @Const(locals),
-                                            far, @Const(level), @Const(centers), @Const(colleagues), @Const(plo),
-                                            @Const(phi), @Const(sources), @Const(τ), K, output, ::Val{nb}) where {nb}
+                                            far, @Const(level), @Const(centers), @Const(colleagues), @Const(gplo),
+                                            @Const(gphi), sources, τ, sg::Int32, K, output, ::Val{nb}) where {nb}
     q = @index(Global, Linear)
     @inbounds begin
         x = targets[q]
@@ -179,10 +199,7 @@ end
         for c in 1:27
             node = Int(colleagues[c, i])
             node == 0 && continue
-            for j in Int(plo[node]):Int(phi[node])
-                j == skip && continue
-                acc += target_field(K, sources[j], x, τ[j], output)
-            end
+            acc = _device_near(K, sources, τ, gplo, gphi, node, x, Int(sg), skip, acc, output, 1)
         end
         out[oidx[q]] = acc
     end

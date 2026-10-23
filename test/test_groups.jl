@@ -67,6 +67,7 @@ end
     for g in 1:4
         pts = groups[g]
         u = evaluate_at_sources(f, st, g)
+        @test eltype(u) === P3                                                   # concrete with a target-only group
         uref = [sum(FlexibleFMM.source_field(K, allpts[j], pts[i], τ) for (τ, j) in
                     ((τs[1][k], k) for k in 1:3000) if j != (g == 1 ? i : 0)) +
                 sum(FlexibleFMM.source_field(K, groups[2][k], pts[i], τs[2][k]) for k in 1:2500 if !(g == 2 && k == i)) +
@@ -118,4 +119,39 @@ end
             @test mrd(u[1:200], uref) < 1e-8
         end
     end
+end
+
+@testset "groups through the device passes (CPU backend): $(name)" for (name, m, tol) in (
+        ("Stokes harmonics", StokesHarmonics(Stokeslet3D(); p=10), 1e-9),
+        ("Stokes cube", CubeKernelIndependent{3}(Stokeslet3D(); p=6), 1e-9))
+    groups = (sphere_points(rng, 2500), helix_points(rng, 2000), clustered_points3(rng, 800), uniform_points3(rng, 300))
+    τs = ([Stresslet(randn(rng, P3), normalize(randn(rng, P3))) for _ in 1:2500], [(randn(rng, P3), Doublet(randn(rng, P3))) for _ in 1:2000],
+          [randn(rng, P3) for _ in 1:800], nothing)
+    box = (P3(0, 0, 0), 1.0)
+    cache = OperatorCache(m)
+    f = FMM(m, groups; ppl=40, bbox=box, cache=cache)
+    st = build_expansions(f, groups, τs)
+    ucpu = [evaluate_at_sources(f, st, g) for g in 1:4]
+    pcpu = evaluate_at_sources(f, st, 3; output=Pressure())
+    # the plan from the host tree (uploaded tables) and from the points (device tables)
+    plans = (DevicePlan(f), DevicePlan(m, groups; ppl=40, bbox=box, cache=cache))
+    for plan in plans
+        @test FlexibleFMM.ngroups(plan.dev) == 4
+        outs = (similar(ucpu[1]), similar(ucpu[2]), similar(pcpu), similar(ucpu[4]))
+        device_matvec!(outs, plan, (sources=groups, τ=τs); outputs=(Potential(), Potential(), Pressure(), Potential()))
+        @test mrd(outs[1], ucpu[1]) < tol && mrd(outs[2], ucpu[2]) < tol && mrd(outs[4], ucpu[4]) < tol
+        @test mrd(outs[3], pcpu) < tol
+        @test_throws ArgumentError device_matvec!(similar(ucpu[1]), plan, (sources=groups, τ=τs))   # one vector for four groups
+    end
+    # inputs already in the host tree's order (what device_state gives) are valid for the plan
+    # from that tree only (the device tree orders a leaf's points differently); an output left out
+    ds = device_state(st)
+    outs2 = (similar(ucpu[1]), nothing, nothing, nothing)
+    device_matvec!(outs2, plans[1], ds; sorted=true)
+    @test mrd(outs2[1], ucpu[1]) < tol
+    # the device tree's group tables equal the host's
+    dt = device_tree(vcat(groups...); ppl=40, bbox=box, group_sizes=collect(length.(groups)))
+    t = Tree(dt)
+    @test t.group_sizes == f.tree.group_sizes && t.gpoints == f.tree.gpoints
+    @test all(sort(t.gperm[g]) == 1:length(groups[g]) for g in 1:4)
 end

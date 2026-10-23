@@ -102,7 +102,8 @@ builds the tree there too (`device_tree`, the same structure as the host tree);
 expansion passes (dense translations by the symmetry classes of the far offsets)
 and the self evaluation on the device, and the device methods of `evaluate!` and
 `evaluate_at_sources!` take device arrays; backends are not dependencies. The
-kernel-independent and the harmonic methods run there. On an M3 Max in Float32,
+kernel-independent and the harmonic methods run there, groups of points included
+(`device_matvec!((out_a, out_b, nothing), plan, (sources=…, τ=…); outputs=…)`). On an M3 Max in Float32,
 10⁵ Stokes points take 0.13 s per matvec with the cube method (7× the 12-thread
 CPU time in the same precision); see `docs/framework.md`, `docs/harmonics.md` and
 `bench/gpu/`.

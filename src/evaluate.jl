@@ -60,8 +60,8 @@ end
 function _output_eltype(f::FMM{D}, state::FMMState, ::Type{Tt}, out) where {D,Tt}
     K = near_kernel(f.method)
     P = eltype(state.sources[1])
-    Tnear = mapreduce(τ -> τ === nothing ? Bool : Base.promote_op(target_field, typeof(K), P, SVector{D,Tt}, eltype(τ), typeof(out)),
-                      promote_type, state.τ)
+    Tnear = mapreduce(τ -> τ === nothing ? Union{} : Base.promote_op(target_field, typeof(K), P, SVector{D,Tt}, eltype(τ), typeof(out)),
+                      promote_type, state.τ)        # a target-only group adds nothing (Bool would promote an SVector to Any)
     Tfar = Base.promote_op(l2t, typeof(f.method), eltype(f.ops), typeof(view(state.locals, :, 1)),
                            SVector{D,Tt}, typeof(out))
     return promote_type(Tnear, Tfar)

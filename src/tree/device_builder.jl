@@ -37,19 +37,75 @@ struct DeviceTree{D,T,VP,VC,VI,VB,AI}
     perm::VI
     point_node::VI
     sources::VP
+    # groups (`docs/tree.md`): per group and node the point range in the group's own
+    # numbering (`gplo`/`gphi`, G × nnodes), the original index within the group of each
+    # group-local sorted point, and its leaf
+    group_sizes::Vector{Int}
+    gplo::AI
+    gphi::AI
+    gperm::Vector{VI}
+    gpoint_node::Vector{VI}
 end
 nnodes(dt::DeviceTree) = length(dt.level)
 nlevels(dt::DeviceTree) = length(dt.level_range)
 npoints(dt::DeviceTree) = length(dt.perm)
+ngroups(dt::DeviceTree) = length(dt.group_sizes)
 
 function DeviceTree(tree::Tree{D,T}, to) where {D,T}
     plo = to(Int32[first(r) for r in tree.points])
-    return DeviceTree{D,T,typeof(to(SVector{D,T}[])),typeof(to(SVector{D,Int32}[])),typeof(plo),typeof(to(UInt8[])),typeof(to(Int32[;;]))}(
+    G = ngroups(tree)
+    gplo = to(Int32[first(tree.gpoints[g][i]) for g in 1:G, i in eachindex(tree.points)])
+    gphi = to(Int32[last(tree.gpoints[g][i]) for g in 1:G, i in eachindex(tree.points)])
+    return DeviceTree{D,T,typeof(to(SVector{D,T}[])),typeof(to(SVector{D,Int32}[])),typeof(plo),typeof(to(UInt8[])),typeof(gplo)}(
         tree.origin, tree.W0, tree.level_range, to(SVector{D,Int32}.(tree.cell)), to(Int32.(tree.level)),
         to(Int32.(tree.parent)), to(Int32.(tree.child_first)), plo, to(Int32[last(r) for r in tree.points]),
         to(UInt8.(tree.leaf)), to(UInt8.(tree.ghost)), to(UInt8.(tree.xlist)), to(UInt8.(tree.has_source)),
         to(Int32.(tree.colleagues)), [to(Int32.(gp)) for gp in tree.group_parent], to(Int32.(tree.perm)),
-        to(Int32.(tree.point_node)), to(SVector{D,T}[]))
+        to(Int32.(tree.point_node)), to(SVector{D,T}[]),
+        copy(tree.group_sizes), gplo, gphi, [to(Int32.(gp)) for gp in tree.gperm], [to(Int32.(gn)) for gn in tree.gpoint_node])
+end
+
+# the group tables from the sorted order: per group the flags of its points in sorted
+# order, their exclusive scan (the group-local index minus one), the node ranges from
+# the scan at the range ends, and the group's permutation and leaves by compaction
+@kernel function _group_flags!(flag, @Const(perm), lo::Int32, hi::Int32)
+    j = @index(Global, Linear)
+    @inbounds flag[j] = Int32(lo < perm[j] <= hi)
+end
+@kernel function _group_ranges!(gplo, gphi, @Const(scan), @Const(flag), @Const(plo), @Const(phi), g::Int32)
+    i = @index(Global, Linear)
+    @inbounds begin
+        lo, hi = plo[i], phi[i]
+        if hi < lo
+            gplo[g, i] = Int32(1); gphi[g, i] = Int32(0)
+        else
+            gplo[g, i] = scan[lo] + Int32(1)
+            gphi[g, i] = scan[hi] + flag[hi]
+        end
+    end
+end
+function _device_group_tables(perm, plo, phi, point_node, sizes::Vector{Int})
+    backend = get_backend(perm)
+    N = length(perm)
+    n = length(plo)
+    G = length(sizes)
+    starts = cumsum(vcat(0, sizes))
+    gplo = similar(plo, G, n)
+    gphi = similar(plo, G, n)
+    gperm = Vector{typeof(perm)}(undef, G)
+    gpoint_node = Vector{typeof(perm)}(undef, G)
+    flag = similar(perm)
+    scan = similar(perm)
+    for g in 1:G
+        _group_flags!(backend, 256)(flag, perm, Int32(starts[g]), Int32(starts[g+1]); ndrange=N)
+        _exclusive_scan!(scan, flag)
+        _group_ranges!(backend, 256)(gplo, gphi, scan, flag, plo, phi, Int32(g); ndrange=n)
+        idx, cnt = _compact(flag)
+        cnt == sizes[g] || error("group $g: $cnt points found of $(sizes[g])")
+        gperm[g] = perm[idx] .- Int32(starts[g])
+        gpoint_node[g] = point_node[idx]
+    end
+    return gplo, gphi, gperm, gpoint_node
 end
 
 # ---- the per-level builder on the device ----
@@ -300,10 +356,12 @@ end
 The tree of the points `xs` (a device vector of `SVector`s; `bbox = (origin, W0)`
 is required), built on their device: the same structure as `Tree(Array(xs); …)`.
 """
-function device_tree(xs::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox, max_levels::Integer=30) where {D,T<:AbstractFloat}
+function device_tree(xs::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox, max_levels::Integer=30,
+                     group_sizes::Vector{Int}=[length(xs)]) where {D,T<:AbstractFloat}
     ppl >= 1 || throw(ArgumentError("ppl must be positive"))
     N = length(xs)
     N > 0 || throw(ArgumentError("no points"))
+    sum(group_sizes) == N || throw(DimensionMismatch("the groups do not add up to the points"))
     origin, W0 = SVector{D,T}(bbox[1]), T(bbox[2])
     W0 > 0 || throw(ArgumentError("box width must be positive"))
     backend = get_backend(xs)
@@ -373,10 +431,10 @@ function device_tree(xs::AbstractVector{SVector{D,T}}; ppl::Integer=50, bbox, ma
         _split!(lev, which, nx, l, levels[l+1], skeys, Val(D), Val(KL); ghost=true)
         _tag!(levels[l+1], lev, Val(D))
     end
-    return _flatten(levels, origin, W0, perm, sources, Val(D))
+    return _flatten(levels, origin, W0, perm, sources, group_sizes, Val(D))
 end
 
-function _flatten(levels::Vector{<:DeviceLevel}, origin::SVector{D,T}, W0::T, perm, sources, ::Val{D}) where {D,T}
+function _flatten(levels::Vector{<:DeviceLevel}, origin::SVector{D,T}, W0::T, perm, sources, group_sizes::Vector{Int}, ::Val{D}) where {D,T}
     L = length(levels)
     counts = [lev.n for lev in levels]
     offs = cumsum(vcat(0, counts[1:end-1]))
@@ -397,9 +455,10 @@ function _flatten(levels::Vector{<:DeviceLevel}, origin::SVector{D,T}, W0::T, pe
                                 Int32(l), Int32(offs[l]), Int32(l == 1 ? 0 : offs[l-1]), Int32(l == L ? 0 : offs[l+1]); ndrange=lev.n)
     end
     group_parent = [l == 1 ? similar(perm, 0) : parent[first(level_range[l]):nc:last(level_range[l])] for l in 1:L]
+    gplo, gphi, gperm, gpoint_node = _device_group_tables(perm, plo, phi, point_node, group_sizes)
     return DeviceTree{D,T,typeof(sources),typeof(cell),typeof(perm),typeof(leaf),typeof(col)}(
         origin, W0, level_range, cell, level, parent, child_first, plo, phi, leaf, ghost, xlist, has_source, col,
-        group_parent, perm, point_node, sources)
+        group_parent, perm, point_node, sources, copy(group_sizes), gplo, gphi, gperm, gpoint_node)
 end
 
 """
@@ -419,8 +478,9 @@ function Tree(dt::DeviceTree{D,T}) where {D,T}
     points = [plo[i]:phi[i] for i in eachindex(plo)]
     perm = Int.(Array(dt.perm))
     point_node = Int.(Array(dt.point_node))
-    return Tree{D,T}(dt.origin, dt.W0, dt.level_range, cell, Int.(Array(dt.level)), parent, child_first,
-                     points, Bool.(Array(dt.leaf)), ghost, Bool.(Array(dt.xlist)), has_source,
-                     colleagues, [Int.(Array(gp)) for gp in dt.group_parent], ilists, perm, point_node, far_index,
-                     [length(perm)], [points], [perm], [point_node])
+    t = Tree{D,T}(dt.origin, dt.W0, dt.level_range, cell, Int.(Array(dt.level)), parent, child_first,
+                  points, Bool.(Array(dt.leaf)), ghost, Bool.(Array(dt.xlist)), has_source,
+                  colleagues, [Int.(Array(gp)) for gp in dt.group_parent], ilists, perm, point_node, far_index,
+                  [length(perm)], [points], [perm], [point_node])
+    return ngroups(dt) == 1 ? t : _with_groups(t, dt.group_sizes)
 end

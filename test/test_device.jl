@@ -73,5 +73,5 @@ end
     pts = [rand(rngi, SVector{2,Float64}) for _ in 1:500]
     f = FMM(KernelIndependent(Laplace2D(); nequiv=20), pts; ppl=30, bbox=(SVector(0.0, 0.0), 1.0))
     dev = DeviceEvaluator(f)
-    @test eltype(dev.colleagues) == Int32 && eltype(dev.plo) == Int32 && eltype(dev.point_node) == Int32
+    @test eltype(dev.colleagues) == Int32 && eltype(dev.gplo) == Int32 && eltype(dev.gpoint_node[1]) == Int32 && eltype(dev.gperm[1]) == Int32
 end
