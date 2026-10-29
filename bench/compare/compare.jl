@@ -30,8 +30,8 @@
 # matvec (DevicePlan + device_matvec!) and the library rows stay on the CPU.
 # tree=host|device (device whenever a device is given): with tree=device the tree
 # is built on the device inside the plan build (`DevicePlan(m, xs; …)`), the plan
-# column (steady state: one untimed build per size first, Metal's sortperm!
-# compiles per array size), with the tree column empty; with tree=host the tree is
+# column (steady state: one untimed build first, which puts the operators' device
+# copies in the cache), with the tree column empty; with tree=host the tree is
 # built on the host (tree column) and uploaded, the lists built on the device
 # (`DevicePlan(f, dev)`, plan column). The first column is the first matvec of a
 # fresh plan or state, and total = tree + plan + matvec, everything a new point
@@ -121,8 +121,8 @@ function run_ours(m, τ, ptsT; dev=to)
         outd = dev(similar(τ, typeof(evaluate_at_sources(fw, sw)[1])))
         local plan
         if devtree
-            # the tree on the device inside the plan build, once untimed at this size first
-            # (Metal's sortperm! compiles per array size), then the steady-state build
+            # the tree on the device inside the plan build, once untimed first (the first
+            # plan with a cache builds the operators' device copies), then the steady state
             DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)
             GC.gc()                                         # release it: device buffers go with their finalizers
             t_plan = @elapsed plan = DevicePlan(m, ds.sources; ppl=ppl, bbox=box, cache=cache)

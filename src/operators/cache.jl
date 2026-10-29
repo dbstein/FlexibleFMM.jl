@@ -6,17 +6,19 @@ mutable struct OperatorCache{M<:AbstractMethod,O}
     method::M
     W0::Float64            # NaN until the first box is fitted
     ops::Dict{Int,O}
+    device::Dict{Any,Any}  # device copies and device-side forms of the operators (device_passes.jl)
 end
 
 """
     OperatorCache(method)
 
 An empty operator cache for `method`. Pass the same cache to several `FMM`s to reuse
-their translation operators.
+their translation operators, and to several `DevicePlan`s to reuse the operators'
+device copies (built and uploaded by the first plan that needs them).
 """
 function OperatorCache(method::AbstractMethod)
     O = operators_type(method)
-    return OperatorCache{typeof(method),O}(method, NaN, Dict{Int,O}())
+    return OperatorCache{typeof(method),O}(method, NaN, Dict{Int,O}(), Dict{Any,Any}())
 end
 has_base_width(c::OperatorCache) = !isnan(c.W0)
 Base.length(c::OperatorCache) = length(c.ops)
@@ -53,12 +55,14 @@ containment of the points may need; if that leaves the upper edge short, the wid
 is doubled.
 """
 function fit_box!(c::OperatorCache, points::AbstractVector{SVector{D,T}}, bbox) where {D,T}
-    lo = reduce((a, b) -> min.(a, b), points)
+    lo = reduce((a, b) -> min.(a, b), points)          # min and max propagate NaN, which the bounds form rejects
     hi = reduce((a, b) -> max.(a, b), points)
     return fit_box!(c, lo, hi, bbox === nothing ? square_bbox(points) : bbox)
 end
 # from the points' bounds (`lo`, `hi`) and the requested box
 function fit_box!(c::OperatorCache, lo::SVector{D,T}, hi::SVector{D,T}, bbox) where {D,T}
+    # a NaN coordinate would fail the containment test below and read as a geometry problem
+    all(isfinite, lo) && all(isfinite, hi) || throw(ArgumentError("the points must be finite"))
     origin, W = SVector{D,T}(bbox[1]), T(bbox[2])
     W > 0 || throw(ArgumentError("box width must be positive"))
     all(origin .<= lo) && all(origin .+ W .>= hi) || throw(ArgumentError("points lie outside the requested box"))

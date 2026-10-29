@@ -102,10 +102,49 @@ function _device_group_tables(perm, plo, phi, point_node, sizes::Vector{Int})
         _group_ranges!(backend, 256)(gplo, gphi, scan, flag, plo, phi, Int32(g); ndrange=n)
         idx, cnt = _compact(flag)
         cnt == sizes[g] || error("group $g: $cnt points found of $(sizes[g])")
-        gperm[g] = perm[idx] .- Int32(starts[g])
-        gpoint_node[g] = point_node[idx]
+        # gathered by kernel: indexing a device array with a device index array checks
+        # its bounds by a reduction that Metal compiles anew for every index length
+        gp = similar(perm, cnt); gn = similar(perm, cnt)
+        if cnt > 0
+            _gather_by!(backend, 256)(gp, perm, idx; ndrange=cnt)
+            _gather_by!(backend, 256)(gn, point_node, idx; ndrange=cnt)
+        end
+        gp .-= Int32(starts[g])
+        gperm[g] = gp
+        gpoint_node[g] = gn
     end
     return gplo, gphi, gperm, gpoint_node
+end
+
+# The componentwise bounds of points on a device: one strided pass per work-item over
+# at most 16384 work-items, finished on the host. A reduction of the backend
+# (`mapreduce`) would do, but Metal compiles its reduction kernels anew for every
+# array length, about 0.5 s per new point count. NaN propagates through `min` and
+# `max`, so non-finite coordinates show in the bounds.
+@kernel function _bounds_strided!(lo, hi, @Const(xs), n::Int32, stride::Int32)
+    t = @index(Global, Linear)
+    @inbounds begin
+        a = xs[t]
+        b = a
+        j = t + stride
+        while j <= n
+            y = xs[j]
+            a = min.(a, y)
+            b = max.(b, y)
+            j += stride
+        end
+        lo[t] = a
+        hi[t] = b
+    end
+end
+function _device_bounds(xs::AbstractVector{SVector{D,T}}) where {D,T}
+    n = length(xs)
+    n > 0 || throw(ArgumentError("no points"))
+    nt = min(n, 16384)
+    lo = similar(xs, nt)
+    hi = similar(xs, nt)
+    _bounds_strided!(get_backend(xs), 256)(lo, hi, xs, Int32(n), Int32(nt); ndrange=nt)
+    return reduce((a, b) -> min.(a, b), Array(lo)), reduce((a, b) -> max.(a, b), Array(hi))
 end
 
 # ---- the per-level builder on the device ----

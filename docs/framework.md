@@ -294,9 +294,11 @@ for a group whose output is not wanted, and one output type per group.
   already); `sorted=true` takes them in the tree's order, as `device_state`
   provides them. The prefix sums of the list build are KernelAbstractions kernels
   of the package (block totals, a recursive scan of them, the blocks scanned with
-  their offsets): Metal's `accumulate!` and `sum(…; dims)` go through MPSGraph,
-  which compiles a graph per array size, 0.2–1.2 s of every plan build since every
-  tree has new level sizes. `DevicePlan(…; verbose=true)` reports the build's stages. On the M3 Max (Metal,
+  their offsets): Metal compiles its reduction kernels (`sum(…; dims)`,
+  `mapreduce`) anew for every array shape, 0.15–0.6 s each, which the new level
+  sizes of every tree would pay in every plan build. (An earlier version of this
+  note blamed MPSGraph; Metal's `accumulate!` does go through it, but takes a few
+  milliseconds at a new size.) `DevicePlan(…; verbose=true)` reports the build's stages. On the M3 Max (Metal,
   Float32, sphere points, Stokes cube `p = 4`, 800 per leaf) the plan builds in
   0.07 s at 10⁶ points and 0.22 s at 10⁷ (lists 0.02 and 0.05 s), against 1.3 and
   1.8 s with the lists on the host, and the tree in 0.06 and 0.32 s on 12 threads;
@@ -307,7 +309,24 @@ for a group whose output is not wanted, and one output type per group.
   the same configuration) the device tree takes 5 ms at 10⁶ points, 36 ms at 10⁷
   and 0.74 s at 10⁸ (10 levels, 6 M nodes), the whole plan 77, 120 and 840 ms, and
   the matvec 24, 149 and 1480 ms (67 M points per second from 10⁷ up; 2 × 10⁸ points fit, 10⁹ do not); the host
-  tree there was 0.6–1.0 s at 10⁷. The bench scripts evaluate their Float64
+  tree there was 0.6–1.0 s at 10⁷. Plans built with one operator cache share the
+  operators' device copies (kept in the cache): the cube method's class operators
+  (and their low-rank factors, per `tol`), the folded M2M and L2L and the
+  pseudo-inverse factors are computed and uploaded by the first plan at a width
+  only, so a plan rebuilt every time step for moving points pays its tree, lists
+  and buffers: 0.05–0.07 s for 3.6·10⁴ to 1.5·10⁵ points with the Stokes cube
+  method at `p = 8` on the M3 Max, against 0.14–0.18 s when every build made its
+  own, and 1.5–2.6 s with `tol > 0`. Two behaviours of Metal.jl shape the plan's
+  buffers. Its default matrix multiply (an MPSGraph forming `α·A·B + β·C`) reads
+  the output at `β = 0`, so a non-finite input would poison every later
+  application of a plan (`0·NaN = NaN`); the passes zero the GEMM outputs first,
+  one fill per buffer, 2% of an application at 7,200 points and nothing measurable
+  from 10⁵ up. It also keeps a compiled graph per GEMM shape, about 0.5 MB each,
+  never evicted; the per-level buffers have their column counts rounded up to
+  `m·2^e` with `m` in 8:15 (at most an eighth more columns), so plans rebuilt for
+  moving points revisit a few shapes instead of adding about two per rebuild.
+  `bench/gpu/metal_checks.jl` checks both on Metal, with the build at new point
+  counts and the sharing of the operators. The bench scripts evaluate their Float64
   reference on the inputs the run sees: the points and densities rounded to the
   run's precision (a round trip through Float32 in Float32 runs). Against the
   unrounded points a Float32 row shows about 1e-3 on sphere points whatever the

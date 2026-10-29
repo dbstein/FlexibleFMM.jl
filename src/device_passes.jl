@@ -5,8 +5,10 @@
 # multipoles, one GEMM, a target-owned scatter), and the pseudo-inverse to the
 # densities the evaluation kernel reads. Real and complex expansions (complex
 # GEMMs need the device's BLAS to support them: CUDA yes, Metal no); dual numbers
-# take the CPU passes and the device evaluation. All buffers are exact-size device
-# arrays, because device GEMMs on views fall back to slow generic code.
+# take the CPU passes and the device evaluation. All buffers are whole device
+# arrays, because device GEMMs on views fall back to slow generic code; the
+# per-level ones that GEMMs read or write have their column counts rounded up to a
+# coarse grid (`_pad_cols`), their extra columns zero.
 
 """
     DevicePlan(fmm, to=identity; tol=0, fast=false)
@@ -89,7 +91,8 @@ function DevicePlan(f::FMM{D,T}, to=identity; tol::Real=0, fast::Bool=false, elt
                     verbose::Bool=false) where {D,T}
     dt = DeviceTree(f.tree, to)
     return _device_plan(dt, f.method, f.ops, [to(Int32.(f.s2m_nodes[l])) for l in 1:nlevels(dt)],
-                        [to(Int32.(f.leaf_nodes[l])) for l in 1:nlevels(dt)], to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)
+                        [to(Int32.(f.leaf_nodes[l])) for l in 1:nlevels(dt)], to; cache=f.cache, tol=tol, fast=fast, eltype=eltype,
+                        verbose=verbose)
 end
 
 """
@@ -102,7 +105,9 @@ tuple of them, one per group of sources with its own density type;
 (`device_tree`), the operators of its levels from `cache` (the root box `bbox =
 (origin, width)` snapped to a width the cache knows), the node lists by compaction,
 the lists and the chunks as in the plan of a host FMM. Nothing of the tree touches
-the host but the level counts.
+the host but the level counts. Plans built with the same `cache` share the
+operators' device copies, computed and uploaded by the first plan at each width:
+pass one cache to the plans of a time-stepping loop.
 """
 DevicePlan(m::AbstractMethod, xs::AbstractVector{<:SVector}; kwargs...) = DevicePlan(m, (xs,); kwargs...)
 function DevicePlan(m::AbstractMethod, groups::Tuple{Vararg{AbstractVector{SVector{D,T}}}}; ppl::Integer=50, bbox,
@@ -114,8 +119,7 @@ function DevicePlan(m::AbstractMethod, groups::Tuple{Vararg{AbstractVector{SVect
     xs = length(groups) == 1 ? groups[1] : vcat(groups...)
     to = _mover(xs)
     t_tree = @elapsed begin
-        lo = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], min, xs), Val(D)))
-        hi = SVector{D,T}(ntuple(k -> mapreduce(p -> p[k], max, xs), Val(D)))
+        lo, hi = _device_bounds(xs)             # also the containment and finiteness checks of fit_box!
         origin, W0, e0 = fit_box!(cache, lo, hi, bbox)
         dt = device_tree(xs; ppl=ppl, bbox=(origin, W0), max_levels=max_levels, group_sizes=[length(g) for g in groups])
         L = nlevels(dt)
@@ -126,11 +130,31 @@ function DevicePlan(m::AbstractMethod, groups::Tuple{Vararg{AbstractVector{SVect
         leaf_nodes = [_compact(leaf_flag[r])[1] .+ Int32(first(r) - 1) for r in dt.level_range]
     end
     verbose && println("DevicePlan: tree ", round(t_tree, digits=3), " s (", L, " levels, ", nnodes(dt), " nodes)")
-    return _device_plan(dt, m, ops, s2m_nodes, leaf_nodes, to; tol=tol, fast=fast, eltype=eltype, verbose=verbose)
+    return _device_plan(dt, m, ops, s2m_nodes, leaf_nodes, to; cache=cache, tol=tol, fast=fast, eltype=eltype, verbose=verbose)
 end
 
+# Device copies of the operators live in the operator cache (`cache.device`) and are
+# shared by every plan built with it, so a plan rebuilt every time step computes and
+# uploads none (the first plan at a width pays: 0.02–0.04 s for the cube method's
+# dense class operators at p = 8, 1–2 s for their low-rank factors). Computed forms
+# are keyed by the level width; plain copies of a matrix the cache owns by that
+# matrix's identity, so levels sharing a matrix (the rescaled levels of a homogeneous
+# kernel) share its copy too.
+_device_memo(f, ::Nothing, key) = f()
+_device_memo(f, c::OperatorCache, key) = get!(f, c.device, key)
+_device_copy(c, A::AbstractMatrix, to, ::Type{T}) where {T} = _device_memo(() -> to(Matrix{T}(A)), c, (:copy, objectid(A), to, T))
+_device_copy(c, A::AbstractVector, to, ::Type{T}) where {T} = _device_memo(() -> to(Vector{T}(A)), c, (:copy, objectid(A), to, T))
+
+# Column counts of the per-level GEMM buffers, which follow the tree, rounded up to
+# m·2^e with m in 8:15 (at most an eighth more columns, at least 16): a backend that
+# compiles and keeps a graph per GEMM shape (Metal's MPSGraph, about 0.5 MB each,
+# never evicted) then sees a few shapes over many trees instead of new ones for
+# every tree. The extra columns are zero and no kernel reads them.
+_pad_cols(n::Integer) = n <= 16 ? 16 : (s = 1 << (60 - leading_zeros(Int64(n))); cld(n, s) * s)
+
 function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, leaf_nodes::Vector, to;
-                      tol::Real=0, fast::Bool=false, eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
+                      cache::Union{Nothing,OperatorCache}=nothing, tol::Real=0, fast::Bool=false,
+                      eltype::Type=operator_eltype(m), verbose::Bool=false) where {D,T}
     t_start = time()
     m isa AbstractKernelIndependent || m isa HarmonicMethod ||
         throw(ArgumentError("the device passes are written for the kernel-independent and harmonic methods"))
@@ -160,19 +184,20 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
     m2l_scale = ones(L)
     ranks = Int[]
     rankl = [Int[] for _ in 1:L]                # per level: the low-rank class ranks (empty: dense)
+    wl(l) = Float64(ops[l].width)        # the key of a level's operators in the cache
     if m isa CubeKernelIndependent && covariant(K)
-        e3 = ops[l3].extra
-        build(e, w) = tol > 0 ? (r = class_factors(K, e.small, e.embed, w, e.p, tol); (r[1], r[2], r[3], r[4])) :
-                                (r = class_operators(K, e.small, e.embed, w, e.p); (r[1], r[2], Matrix{TO}[], Int[]))
-        sc, opsc, btc, ranks = build(e3, ops[l3].width)
-        dc = [to(Matrix{TO}(A)) for A in opsc]
-        db = [to(Matrix{TO}(B)) for B in btc]
+        # the class operators (or their low-rank factors) at the width of level l, on the device
+        classes(l) = _device_memo(cache, (:cube_classes, wl(l), Float64(tol), to, TO)) do
+            e = ops[l].extra
+            r = tol > 0 ? class_factors(K, e.small, e.embed, ops[l].width, e.p, tol) :
+                          class_operators(K, e.small, e.embed, ops[l].width, e.p)
+            bt, rk = tol > 0 ? (r[3], r[4]) : (Matrix{TO}[], Int[])
+            (r[1], [to(Matrix{TO}(A)) for A in r[2]], [to(Matrix{TO}(B)) for B in bt], rk)
+        end
+        sc, dc, db, ranks = classes(l3)
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                _, ol, bl, rl = build(ops[l].extra, ops[l].width)
-                M2Lc[l] = [to(Matrix{TO}(A)) for A in ol]
-                M2Lb[l] = [to(Matrix{TO}(B)) for B in bl]
-                rankl[l] = rl
+                _, M2Lc[l], M2Lb[l], rankl[l] = classes(l)
             else
                 M2Lc[l] = dc
                 M2Lb[l] = db
@@ -184,7 +209,9 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
         offs = far_offsets(Val(D))
         nfo = length(offs)
         sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
-        dense(l) = [to(Matrix{TO}(_cube_m2l_matrix(K, ops[l].extra, ops[l].width, o))) for o in offs]
+        dense(l) = _device_memo(cache, (:cube_dense, wl(l), to, TO)) do
+            [to(Matrix{TO}(_cube_m2l_matrix(K, ops[l].extra, ops[l].width, o))) for o in offs]
+        end
         dc = dense(l3)
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
@@ -199,11 +226,11 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
         sc = e3.sc
         reps = e3.reps
         if reps[1] isa LowRankM2L
-            dc = [to(Matrix{TO}(r.U)) for r in reps]
-            db = [to(Matrix{TO}(r.Vt)) for r in reps]
+            dc = [_device_copy(cache, r.U, to, TO) for r in reps]
+            db = [_device_copy(cache, r.Vt, to, TO) for r in reps]
             ranks = [size(r.U, 2) for r in reps]
         else
-            dc = [to(Matrix{TO}(r.A)) for r in reps]
+            dc = [_device_copy(cache, r.A, to, TO) for r in reps]
             db = typeof(to(zeros(TO, 1, 1)))[]
         end
         for l in 1:L
@@ -216,10 +243,10 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
         offs = far_offsets(Val(D))
         nfo = length(offs)
         sc = SymmetryClasses{D}(offs, collect(1:nfo), [collect(1:Nm) for _ in 1:nfo], [ones(Int8, Nm) for _ in 1:nfo])
-        dc = [to(Matrix{TO}(ops[l3].M2L[fi].A)) for fi in 1:nfo]
+        dc = [_device_copy(cache, ops[l3].M2L[fi].A, to, TO) for fi in 1:nfo]
         for l in 1:L
             if a === nothing && l >= 3 && l != l3
-                M2Lc[l] = [to(Matrix{TO}(ops[l].M2L[fi].A)) for fi in 1:nfo]
+                M2Lc[l] = [_device_copy(cache, ops[l].M2L[fi].A, to, TO) for fi in 1:nfo]
             else
                 M2Lc[l] = dc                                     # shared reference matrices
                 m2l_scale[l] = Float64(ops[l].m2l_scale)
@@ -255,11 +282,17 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
     t_up = @elapsed begin
     proto = to(Matrix{TO}(undef, 0, 0))
     mk(r, c) = fill!(similar(proto, r, c), zero(TO))      # zeroed on the device: no host zeros to page in and upload
-    # the Stokes harmonic M2M and L2L in their dense form: one large GEMM per level
-    # beats the eight child blocks with their kernels on a device
-    dense_ops = nb == 4 ? Dict(l => _stokes_dense_operators(ops[l], Ns) for l in 1:L) : Dict{Int,Tuple{Matrix{TO},Matrix{TO}}}()
-    m2m_dense(l) = nb == 4 ? dense_ops[l][1] : ops[l].M2M
-    l2l_dense(l) = nb == 4 ? dense_ops[l][2] : ops[l].L2L
+    # the folded M2M and L2L of each level on the device; the Stokes harmonic ones in
+    # their dense form: one large GEMM per level beats the eight child blocks with
+    # their kernels on a device
+    function m2m_l2l(l)
+        nb == 4 || return (_device_copy(cache, ops[l].M2M, to, TO), _device_copy(cache, ops[l].L2L, to, TO))
+        return _device_memo(cache, (:stokes_dense, wl(l), to, TO)) do
+            A, B = _stokes_dense_operators(ops[l], Ns)
+            (to(Matrix{TO}(A)), to(Matrix{TO}(B)))
+        end
+    end
+    mops = [m2m_l2l(l) for l in 1:L]
     lens = unique([ch.len for l in 1:L for ch in chunks[l]])
     isempty(lens) && push!(lens, 64)
     zranks = Dict{Tuple{Int,Int},Int}()             # per (class, chunk length): the rank over the levels
@@ -269,16 +302,17 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
         zranks[key] = max(get(zranks, key, 0), r)
     end
     # the pseudo-inverse factors (placeholders for the harmonic methods)
-    pm(get) = pinv ? [to(Matrix{TO}(get(ops[l].extra))) for l in 1:L] : [mk(1, 1) for l in 1:L]
-    pv(get) = pinv ? [to(Vector{R}(get(ops[l].extra))) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
+    pm(get) = pinv ? [_device_copy(cache, get(ops[l].extra), to, TO) for l in 1:L] : [mk(1, 1) for l in 1:L]
+    pv(get) = pinv ? [_device_copy(cache, get(ops[l].extra), to, R) for l in 1:L] : [to(zeros(R, 1)) for l in 1:L]
     rup(l) = pinv ? rank(ops[l].extra.P_up) : 1
     rdn(l) = pinv ? rank(ops[l].extra.P_down) : 1
-    nq(l) = max(1, length(leaf_nodes[l]))
+    nq(l) = length(leaf_nodes[l])
+    pc(n) = _pad_cols(max(1, n))
     plan = DevicePlan{D,typeof(dev),typeof(to(zeros(TO, 1, 1))),typeof(to(zeros(R, 1))),VI,typeof(to(idx)),typeof(to(sgn)),typeof(offs)}(
         dev, L, lo, nl, Nm, pml, pll, Nl,
         s2m_nodes, leaf_nodes, [leaf_nodes[l] .- Int32(lo[l] - 1) for l in 1:L], dt.group_parent,
-        [to(Matrix{TO}(m2m_dense(l))) for l in 1:L], [Float64(ops[l].m2m_scale) for l in 1:L],
-        [to(Matrix{TO}(l2l_dense(l))) for l in 1:L], [Float64(ops[l].l2l_scale) for l in 1:L],
+        [mops[l][1] for l in 1:L], [Float64(ops[l].m2m_scale) for l in 1:L],
+        [mops[l][2] for l in 1:L], [Float64(ops[l].l2l_scale) for l in 1:L],
         pm(e -> e.P_up.Uh), pv(e -> e.P_up.invS), pm(e -> e.P_up.V),
         pm(e -> e.P_down.Uh), pv(e -> e.P_down.invS), pm(e -> e.P_down.V),
         pinv ? [Float64(ops[l].extra.pinv_scale) for l in 1:L] : ones(L),
@@ -286,12 +320,12 @@ function _device_plan(dt::DeviceTree{D,T}, m, ops::Vector, s2m_nodes::Vector, le
         Dict(key => mk(max(1, r), nb * key[2]) for (key, r) in zranks),
         to(idx), to(inv), to(sgn), to(sgn_t), nb, offs, pinv, lists, chunks, chunk,
         mk(Nm, nnodes(dt)), mk(pll, nnodes(dt)), mk(Nl, nnodes(dt)),
-        [mk(pml, max(1, length(s2m_nodes[l]))) for l in 1:L],
-        [mk(rup(l), max(1, length(s2m_nodes[l]))) for l in 1:L],
-        [mk(Nm, max(1, length(s2m_nodes[l]))) for l in 1:L],
-        [mk(nc * Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L], [mk(Nm, l < L ? nl[l+1] ÷ nc : 1) for l in 1:L],
-        [mk(pll, max(1, nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, max(1, nl[l] ÷ nc)) for l in 1:L],
-        [mk(pll, nl[l]) for l in 1:L], [mk(pll, nq(l)) for l in 1:L], [mk(rdn(l), nq(l)) for l in 1:L], [mk(Nl, nq(l)) for l in 1:L],
+        [mk(pml, pc(length(s2m_nodes[l]))) for l in 1:L],
+        [mk(rup(l), pc(length(s2m_nodes[l]))) for l in 1:L],
+        [mk(Nm, pc(length(s2m_nodes[l]))) for l in 1:L],
+        [mk(nc * Nm, pc(l < L ? nl[l+1] ÷ nc : 1)) for l in 1:L], [mk(Nm, pc(l < L ? nl[l+1] ÷ nc : 1)) for l in 1:L],
+        [mk(pll, pc(nl[l] ÷ nc)) for l in 1:L], [mk(nc * pll, pc(nl[l] ÷ nc)) for l in 1:L],
+        [mk(pll, nl[l]) for l in 1:L], [mk(pll, pc(nq(l))) for l in 1:L], [mk(rdn(l), pc(nq(l))) for l in 1:L], [mk(Nl, pc(nq(l))) for l in 1:L],
         Dict(len => mk(Ns, nb * len) for len in lens), Dict(len => mk(Ns, nb * len) for len in lens), Dict{Any,Any}())
     end
     if verbose
@@ -440,6 +474,25 @@ end
 
 # ---- the passes ----
 
+# The buffers the GEMMs write (β = 0) are zeroed at the start of every pass. Metal's
+# default matrix multiply (an MPSGraph forming α·A·B + β·C) reads C even for β = 0,
+# so a non-finite value left by one application would survive into every later one
+# (0·NaN = NaN). BLAS and cuBLAS do not read C there. One fill per buffer: 2% of an
+# application at 7,200 points on the M3 Max, nothing measurable from 10⁵ points up.
+function _zero_gemm_outputs!(plan::DevicePlan)
+    bufs = plan.pinv ? (plan.tup, plan.Mup, plan.tM, plan.Y, plan.tdn, plan.Ldn) : (plan.tM, plan.Y)
+    for v in bufs, A in v
+        fill!(A, zero(eltype(A)))
+    end
+    for A in values(plan.Yc)
+        fill!(A, zero(eltype(A)))
+    end
+    for A in values(plan.Zc)
+        fill!(A, zero(eltype(A)))
+    end
+    return plan
+end
+
 function _pinv_apply!(out, Uh, invS, V, X, tmp, α)
     mul!(tmp, Uh, X)
     tmp .= invS .* tmp
@@ -466,6 +519,7 @@ function device_build_expansions!(plan::DevicePlan{D}, ds; sorted::Bool=false) w
     Nm, pml, pll = plan.nm, plan.pml, plan.pll
     Mp = plan.multipoles
     fill!(Mp, zero(eltype(Mp)))
+    _zero_gemm_outputs!(plan)
     # upward
     for l in L:-1:3
         nq = length(plan.s2m_nodes[l])

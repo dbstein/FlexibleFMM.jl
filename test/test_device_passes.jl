@@ -104,7 +104,8 @@ end
     @test mrd(out, evaluate_at_sources(f, st)) < 1e-10
     nonleaf = [i for i in 1:length(f.tree.leaf) if !f.tree.leaf[i]]
     @test all(i -> all(iszero, view(plan.locals, :, i)), nonleaf)
-    @test all(l -> size(plan.Ldn[l], 2) == max(1, length(f.leaf_nodes[l])), 1:plan.nlevels)
+    # one column per real leaf, rounded up to the padding grid of the GEMM buffers
+    @test all(l -> size(plan.Ldn[l], 2) == FlexibleFMM._pad_cols(max(1, length(f.leaf_nodes[l]))), 1:plan.nlevels)
 end
 
 @testset "the device-built lists equal the host's, and inputs in the original order" begin
@@ -151,5 +152,76 @@ end
         u2 = device_matvec!(similar(τ), plan, (sources=pts, τ=τ))
         @test u1 == u2
         @test mrd(u2, evaluate_at_sources(f, st)) < 1e-10
+    end
+end
+
+@testset "plan robustness: bounds, non-finite inputs, padded buffers, shared device operators" begin
+    rngr = MersenneTwister(93)
+    # the size-agnostic bounds against the host's, around the work-item count
+    for n in (1, 7, 16384, 16385, 50003), T in (Float64, Float32)
+        xs = [rand(rngr, SVector{3,T}) .- T(0.5) for _ in 1:n]
+        lo, hi = FlexibleFMM._device_bounds(xs)
+        @test lo == reduce((a, b) -> min.(a, b), xs) && hi == reduce((a, b) -> max.(a, b), xs)
+    end
+    @test_throws ArgumentError FlexibleFMM._device_bounds(P3[])
+    # the padding grid: at least the count, at most an eighth more, 16 at least, a fixed point,
+    # eight values per octave
+    pad = FlexibleFMM._pad_cols
+    @test all(n -> pad(n) >= n && pad(pad(n)) == pad(n), 1:5000) && pad(1) == 16
+    @test all(n -> pad(n) <= n + n ÷ 8, 17:100_000)
+    @test length(unique(pad.(17:2^20))) == 8 * 16
+    # a non-finite point is reported as such, on the host and from device points
+    m = CubeKernelIndependent{3}(Laplace3D(); p=4)
+    N = 3000
+    pts = mixed_points3(rngr, N)
+    τ = randn(rngr, N)
+    box = (P3(0, 0, 0), 1.0)
+    for bad in (P3(NaN, 0.5, 0.5), P3(0.5, Inf, 0.5))
+        q = copy(pts)
+        q[17] = bad
+        e1 = try FMM(m, q; ppl=40, bbox=box); nothing catch e; e end
+        e2 = try DevicePlan(m, q; ppl=40, bbox=box); nothing catch e; e end
+        @test e1 isa ArgumentError && occursin("finite", e1.msg)
+        @test e2 isa ArgumentError && occursin("finite", e2.msg)
+    end
+    # a plan recovers from a non-finite density: the next application is a clean plan's, bitwise
+    # (the backends that read a GEMM's output at β = 0, Metal's, are checked in bench/gpu/metal_checks.jl)
+    cache = OperatorCache(m)
+    plan = DevicePlan(m, pts; ppl=40, bbox=box, cache=cache)
+    ds = (sources=pts, τ=τ)
+    u0 = device_matvec!(zeros(N), plan, ds)
+    τbad = copy(τ)
+    τbad[5] = NaN
+    @test any(isnan, device_matvec!(zeros(N), plan, (sources=pts, τ=τbad)))
+    @test device_matvec!(zeros(N), plan, ds) == u0
+    # plans built with one cache share the operators' device copies and add nothing to it;
+    # the rescaled levels of a homogeneous kernel share one copy of their common matrices
+    n1 = length(cache.device)
+    plan2 = DevicePlan(m, pts; ppl=40, bbox=box, cache=cache)
+    L = plan.nlevels
+    @test length(cache.device) == n1
+    @test all(l -> plan2.M2M[l] === plan.M2M[l] && plan2.Uh_dn[l] === plan.Uh_dn[l] && plan2.invS_up[l] === plan.invS_up[l], 1:L)
+    @test all(l -> all(plan2.M2Lc[l] .=== plan.M2Lc[l]), 3:L)
+    @test all(l -> plan.M2M[l] === plan.M2M[1] && plan.L2L[l] === plan.L2L[1], 1:L)
+    # a plan from a fresh cache gives the same result, bitwise
+    @test device_matvec!(zeros(N), DevicePlan(m, pts; ppl=40, bbox=box), ds) == u0
+    # the low-rank factors are computed once per tolerance
+    mS = CubeKernelIndependent{3}(Stokeslet3D(); p=5)
+    cS = OperatorCache(mS)
+    τS = [randn(rngr, P3) for _ in 1:N]
+    pa = DevicePlan(mS, pts; ppl=40, bbox=box, cache=cS, tol=1e-6)
+    pb = DevicePlan(mS, pts; ppl=40, bbox=box, cache=cS, tol=1e-6)
+    pq = DevicePlan(mS, pts; ppl=40, bbox=box, cache=cS, tol=1e-4)
+    @test pb.M2Lb[3][1] === pa.M2Lb[3][1] && pq.M2Lb[3][1] !== pa.M2Lb[3][1]
+    ua = device_matvec!(similar(τS), pa, (sources=pts, τ=τS))
+    @test device_matvec!(similar(τS), pb, (sources=pts, τ=τS)) == ua
+    # the harmonic methods: the class representatives, and the Stokes method's dense M2M and L2L
+    for mh in (SphericalHarmonics(Laplace3D(); p=8), StokesHarmonics(Stokeslet3D(); p=6))
+        ch = OperatorCache(mh)
+        h1 = DevicePlan(mh, pts; ppl=40, bbox=box, cache=ch)
+        nh = length(ch.device)
+        h2 = DevicePlan(mh, pts; ppl=40, bbox=box, cache=ch)
+        @test length(ch.device) == nh
+        @test all(h2.M2Lc[3] .=== h1.M2Lc[3]) && all(l -> h2.M2M[l] === h1.M2M[l] && h2.L2L[l] === h1.L2L[l], 1:h1.nlevels)
     end
 end

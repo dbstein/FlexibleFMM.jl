@@ -137,8 +137,14 @@ equal the host's, the order within a leaf differs as it does for `perm`.
 `DevicePlan(method, xs; …)` builds the plan from it with nothing of the tree on
 the host: 10⁷ sphere points on the M3 Max's
 GPU in 0.17 s (0.044 s at 10⁶), the whole plan in 0.31 s, against a 0.91 s matvec
-there. Metal's `sortperm!` goes through MPSGraph and compiles per array size, a
-one-time cost per N (about 1 s); CUDA's does not.
+there. A build at a point count not seen before costs what a repeated one does:
+Metal compiles its reduction kernels (`mapreduce`, and with it the bounds check of
+indexing by an index array) anew for every array length, 0.2–0.9 s each, so the
+build uses none: the bounds of the points come from a strided kernel finished on
+the host, and every gather is a kernel. Metal's `sortperm!` (MPSGraph) takes a few
+milliseconds at a new size. What remains is KernelAbstractions compiling a second
+variant of a kernel, without the range check, the first time its range divides
+evenly by the workgroup size, once per kernel and run.
 
 ## Why it works
 
